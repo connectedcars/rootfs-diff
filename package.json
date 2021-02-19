@@ -1,4 +1,7 @@
 {
+  "bin": {
+    "rootfs-diff": "build/dist/bin/rootfs-diff.js"
+  },
   "devDependencies": {
     "@babel/cli": "7.12.13",
     "@babel/core": "7.12.13",

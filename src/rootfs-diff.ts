@@ -13,7 +13,6 @@ export interface File {
   path: string
   size: number
   mode: number
-  sha1sum: string
 }
 
 export async function listFolder(rootPath: string): Promise<File[]> {
@@ -33,22 +32,11 @@ export async function listFolder(rootPath: string): Promise<File[]> {
       } else if (fileStat.isFile()) {
         const relativeFilePath = path.relative(rootPath, filePath)
 
-        let sha1Sum: Buffer
-        try {
-          sha1Sum = await sha1File(filePath)
-        } catch (e) {
-          // Try setting permissions to see if this helps
-          await chmodAsync(filePath, 0o644)
-          sha1Sum = await sha1File(filePath)
-          await chmodAsync(filePath, fileStat.mode)
-        }
-
         results.push({
           fullPath: filePath,
           path: relativeFilePath,
           size: fileStat.size,
-          mode: fileStat.mode,
-          sha1sum: sha1Sum.toString('hex')
+          mode: fileStat.mode
         })
       }
     }
@@ -86,6 +74,19 @@ export function bsdiff(from: string, to: string, diff: string): Promise<void> {
   })
 }
 
+export function hasBsdiff(): Promise<boolean> {
+  return new Promise((resolve, reject) => {
+    execFile('bsdiff', [], (error, stdout, stderr) => {
+      if (error) {
+        if (stderr.match(/bsdiff: usage:/)) {
+          resolve(true)
+        }
+      }
+      reject(false)
+    })
+  })
+}
+
 export function courgette(from: string, to: string, diff: string): Promise<void> {
   const [fromDir, fromFile] = [path.dirname(from), path.basename(from)]
   const [toDir, toFile] = [path.dirname(to), path.basename(to)]
@@ -118,6 +119,47 @@ export function courgette(from: string, to: string, diff: string): Promise<void>
   })
 }
 
+export function diffoscope(from: string, to: string, diff: string): Promise<void> {
+  const [fromDir, fromFile] = [path.dirname(from), path.basename(from)]
+  const [toDir, toFile] = [path.dirname(to), path.basename(to)]
+
+  return new Promise((resolve, reject) => {
+    execFile(
+      // docker run --rm -t -w $(pwd) -v $(pwd):$(pwd):ro registry.salsa.debian.org/reproducible-builds/diffoscope cc-image-iwg26.gatesgarthfixed/usr/bin/ssh.openssh cc-image-iwg26.gatesgarthnewnode/usr/bin/ssh.openssh
+      'docker',
+      [
+        'run',
+        `-v${fromDir}:/from`,
+        `-v${toDir}:/to`,
+        'registry.salsa.debian.org/reproducible-builds/diffoscope',
+        `/from/${fromFile}`,
+        `/to/${toFile}`
+      ],
+      (error, stdout, stderr) => {
+        if (error) {
+          console.log(stdout)
+          console.log(stderr)
+          reject(error)
+        }
+        resolve()
+      }
+    )
+  })
+}
+
+export function hasCourgette(): Promise<boolean> {
+  return new Promise((resolve, reject) => {
+    execFile('docker', ['inspect', '--type=image', 'docker.io/library/courgette:latest'], error => {
+      if (error) {
+        reject(false)
+      }
+      resolve(true)
+    })
+  })
+}
+
+// TODO: Make all oprations atomic with tmp renames
+
 export function zstd(from: string, to: string, level = 17): Promise<void> {
   return new Promise((resolve, reject) => {
     execFile('zstd', [`-${level}`, from, '-o', to], (error, stdout, stderr) => {
@@ -127,6 +169,56 @@ export function zstd(from: string, to: string, level = 17): Promise<void> {
         reject(error)
       }
       resolve()
+    })
+  })
+}
+
+export function unZstd(from: string, to: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    execFile('zstd', [`-d`, from, '-o', to], (error, stdout, stderr) => {
+      if (error) {
+        console.log(stdout)
+        console.log(stderr)
+        reject(error)
+      }
+      resolve()
+    })
+  })
+}
+
+export function hasZstd(): Promise<boolean> {
+  return new Promise((resolve, reject) => {
+    execFile('zstd', ['--help'], error => {
+      if (error) {
+        reject(false)
+      }
+      resolve(true)
+    })
+  })
+}
+
+export function unsquashfs(from: string, to: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    execFile('unsquashfs', [`-d`, to, from], (error, stdout, stderr) => {
+      if (error) {
+        console.log(stdout)
+        console.log(stderr)
+        reject(error)
+      }
+      resolve()
+    })
+  })
+}
+
+export function hasUnsquashfs(): Promise<boolean> {
+  return new Promise((resolve, reject) => {
+    execFile('unsquashfs', ['--help'], (error, stdout, stderr) => {
+      if (error) {
+        if (stderr.match(/SYNTAX: unsquashfs/)) {
+          resolve(true)
+        }
+      }
+      reject(false)
     })
   })
 }

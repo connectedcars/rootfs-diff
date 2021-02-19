@@ -5,8 +5,22 @@ import util from 'util'
 
 const mkdirAsync = util.promisify(fs.mkdir)
 const lstatAsync = util.promisify(fs.lstat)
+const chmodAsync = util.promisify(fs.chmod)
 
-import { bsdiff, courgette, File, listFolder, zstd } from '../src/rootfs-diff'
+import {
+  bsdiff,
+  courgette,
+  File,
+  hasBsdiff,
+  hasCourgette,
+  hasUnsquashfs,
+  hasZstd,
+  listFolder,
+  sha1File,
+  unsquashfs,
+  unZstd,
+  zstd
+} from '../src/rootfs-diff'
 
 const soEndingRegex = /(?:-\d+(?:\.\d+){0,3}\.so|\.so(?:\.\d+){1,3})$/
 const soBaseNameRegex = new RegExp(`^(.+)${soEndingRegex.source}`)
@@ -17,8 +31,47 @@ const groups: RegExp[] = [/zstd[^/]*$/, /^usr\/share\/alsa\/ucm2/, /sudo.+log/, 
 async function main(args: string[]): Promise<number> {
   const diffCachePath = os.tmpdir() + path.sep + 'rootfs-diff'
   await mkdirAsync(diffCachePath, { recursive: true })
+  console.log(`Using cache folder: ${diffCachePath}`)
 
-  const [fromPath, toPath] = args
+  const useBsdiff = await hasBsdiff()
+  const useCourgette = await hasCourgette()
+  const useZstd = await hasZstd()
+  const useUnSquashFs = await hasUnsquashfs()
+
+  const paths: string[] = []
+  for (const rootfsPath of args) {
+    const rootfsPathStat = await lstatAsync(rootfsPath)
+
+    if (rootfsPathStat.isFile()) {
+      let squashfsFile = rootfsPath
+      const sha1Sum = await sha1File(rootfsPath)
+      if (rootfsPath.match(/\.zst[d]?$/)) {
+        squashfsFile = `${diffCachePath}/${sha1Sum.toString('hex')}.squashfs`
+        const squashfsFileStat = await lstatAsync(squashfsFile).catch(() => null)
+        if (squashfsFileStat === null) {
+          await unZstd(rootfsPath, squashfsFile)
+        }
+      }
+      const rootfsCachePath = `${diffCachePath}/${sha1Sum.toString('hex')}.rootfs`
+      const rootfsCacheStat = await lstatAsync(rootfsCachePath).catch(() => null)
+      if (rootfsCacheStat === null) {
+        await unsquashfs(squashfsFile, rootfsCachePath)
+        const files = await listFolder(rootfsCachePath)
+        // Fix permissions if some of the files are missing read permission, fx. sudo
+        for (const file of files) {
+          if ((file.mode & 0o400) === 0) {
+            await chmodAsync(file.fullPath, file.mode | 0o400)
+          }
+        }
+      }
+      paths.push(rootfsCachePath)
+    } else {
+      paths.push(rootfsPath)
+    }
+  }
+
+  const [fromPath, toPath] = paths
+
   const fromFiles = await listFolder(fromPath)
   const toFiles = await listFolder(toPath)
 
@@ -28,8 +81,11 @@ async function main(args: string[]): Promise<number> {
     to: File
     sizeDiff: number
     bsDiffSize: number
+    bsDiffTime: number[] | null
     courgetteDiffSize: number
+    courgetteTime: number[] | null
     courgetteZstdDiffSize: number
+    courgetteZstdTime: number[] | null
   }> = []
   const sameFiles: Array<{ from: File; to: File }> = []
   for (const toFile of toFiles) {
@@ -52,41 +108,61 @@ async function main(args: string[]): Promise<number> {
     if (fromFile.length === 0) {
       newFiles.push(toFile)
     } else if (fromFile.length === 1) {
-      if (fromFile[0].sha1sum === toFile.sha1sum) {
+      const fromFileSha1Sum = (await sha1File(fromFile[0].fullPath)).toString('hex')
+      const toFileSha1Sum = (await sha1File(toFile.fullPath)).toString('hex')
+      if (fromFileSha1Sum === toFileSha1Sum) {
         sameFiles.push({ from: fromFile[0], to: toFile })
       } else {
-        const bsDiffFile = `${diffCachePath}/${fromFile[0].sha1sum}-${toFile.sha1sum}.bsdiff`
-        let bsDiffFileStat = await lstatAsync(bsDiffFile).catch(() => null)
-        if (bsDiffFileStat === null) {
-          console.time(`bsdiff ${fromFile[0].fullPath} ${toFile.fullPath}`)
-          await bsdiff(fromFile[0].fullPath, toFile.fullPath, bsDiffFile)
-          bsDiffFileStat = await lstatAsync(bsDiffFile).catch(() => null)
+        let bsDiffSize = 0
+        let bsDiffTime: number[] | null = null
+        if (useBsdiff) {
+          const bsDiffFile = `${diffCachePath}/${fromFileSha1Sum}-${toFileSha1Sum}.bsdiff`
+          let bsDiffFileStat = await lstatAsync(bsDiffFile).catch(() => null)
+          if (bsDiffFileStat === null) {
+            const bsDiffStartTime = process.hrtime()
+            await bsdiff(fromFile[0].fullPath, toFile.fullPath, bsDiffFile)
+            bsDiffFileStat = await lstatAsync(bsDiffFile).catch(() => null)
+            bsDiffTime = process.hrtime(bsDiffStartTime)
+          }
+          bsDiffSize = bsDiffFileStat?.size ? bsDiffFileStat?.size : -1
         }
-        const bsDiffSize = bsDiffFileStat?.size ? bsDiffFileStat?.size : -1
 
-        const courgetteFile = `${diffCachePath}/${fromFile[0].sha1sum}-${toFile.sha1sum}.courgette`
-        let courgetteFileStat = await lstatAsync(courgetteFile).catch(() => null)
-        if (courgetteFileStat === null) {
-          await courgette(fromFile[0].fullPath, toFile.fullPath, courgetteFile)
-          courgetteFileStat = await lstatAsync(courgetteFile).catch(() => null)
-        }
-        const courgetteDiffSize = courgetteFileStat?.size ? courgetteFileStat?.size : -1
+        let courgetteDiffSize = 0
+        let courgetteZstdDiffSize = 0
+        let courgetteTime: number[] | null = null
+        let courgetteZstdTime: number[] | null = null
+        if (useCourgette) {
+          const courgetteFile = `${diffCachePath}/${fromFileSha1Sum}-${toFileSha1Sum}.courgette`
+          let courgetteFileStat = await lstatAsync(courgetteFile).catch(() => null)
+          if (courgetteFileStat === null) {
+            const courgetteStartTime = process.hrtime()
+            await courgette(fromFile[0].fullPath, toFile.fullPath, courgetteFile)
+            courgetteFileStat = await lstatAsync(courgetteFile).catch(() => null)
+            courgetteTime = process.hrtime(courgetteStartTime)
+          }
+          courgetteDiffSize = courgetteFileStat?.size ? courgetteFileStat?.size : -1
 
-        const courgetteZstdFile = `${diffCachePath}/${fromFile[0].sha1sum}-${toFile.sha1sum}.courgette.zstd`
-        let courgetteZstdFileStat = await lstatAsync(courgetteZstdFile).catch(() => null)
-        if (courgetteZstdFileStat === null) {
-          await zstd(courgetteFile, courgetteZstdFile)
-          courgetteZstdFileStat = await lstatAsync(courgetteZstdFile).catch(() => null)
+          const courgetteZstdFile = `${diffCachePath}/${fromFileSha1Sum}-${toFileSha1Sum}.courgette.zstd`
+          let courgetteZstdFileStat = await lstatAsync(courgetteZstdFile).catch(() => null)
+          if (courgetteZstdFileStat === null) {
+            const courgetteZstdStartTime = process.hrtime()
+            await zstd(courgetteFile, courgetteZstdFile)
+            courgetteZstdTime = process.hrtime(courgetteZstdStartTime)
+            courgetteZstdFileStat = await lstatAsync(courgetteZstdFile).catch(() => null)
+          }
+          courgetteZstdDiffSize = courgetteZstdFileStat?.size ? courgetteZstdFileStat?.size : -1
         }
-        const courgetteZstdDiffSize = courgetteZstdFileStat?.size ? courgetteZstdFileStat?.size : -1
 
         updatedFiles.push({
           from: fromFile[0],
           to: toFile,
           sizeDiff: toFile.size - fromFile[0].size,
           bsDiffSize: bsDiffSize,
+          bsDiffTime: bsDiffTime,
           courgetteDiffSize: courgetteDiffSize,
-          courgetteZstdDiffSize: courgetteZstdDiffSize
+          courgetteTime: courgetteTime,
+          courgetteZstdDiffSize: courgetteZstdDiffSize,
+          courgetteZstdTime: courgetteZstdTime
         })
       }
     } else {
@@ -100,12 +176,12 @@ async function main(args: string[]): Promise<number> {
   for (const groupRegex of groups) {
     const found = newFiles.filter(f => !groupSeen[f.path] && f.path.match(groupRegex))
     if (found.length > 0) {
-    console.log(`  ${groupRegex}: ${found.map(f => f.size).reduce((a, c) => a + c)}`)
-    for (const file of found) {
-      console.log(`    ${file.path}: ${file.size}`)
-      groupSeen[file.path] = true
+      console.log(`  ${groupRegex}: ${found.map(f => f.size).reduce((a, c) => a + c)}`)
+      for (const file of found) {
+        console.log(`    ${file.path}: ${file.size}`)
+        groupSeen[file.path] = true
+      }
     }
-  }
   }
 
   const singleNewFiles = newFiles.filter(f => !groupSeen[f.path])
@@ -134,9 +210,9 @@ async function main(args: string[]): Promise<number> {
   if (newFiles.length > 0) {
     totalNewFilesSize = newFiles.map(f => f.size).reduce((a, c) => a + c)
     totalGroupSize = newFiles
-    .filter(f => groupSeen[f.path])
-    .map(f => f.size)
-    .reduce((a, c) => a + c)
+      .filter(f => groupSeen[f.path])
+      .map(f => f.size)
+      .reduce((a, c) => a + c)
   }
 
   let singleNewFilesSize = 0
