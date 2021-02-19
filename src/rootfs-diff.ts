@@ -85,3 +85,48 @@ export function bsdiff(from: string, to: string, diff: string): Promise<void> {
     })
   })
 }
+
+export function courgette(from: string, to: string, diff: string): Promise<void> {
+  const [fromDir, fromFile] = [path.dirname(from), path.basename(from)]
+  const [toDir, toFile] = [path.dirname(to), path.basename(to)]
+  const [diffDir, diffFile] = [path.dirname(diff), path.basename(diff)]
+
+  return new Promise((resolve, reject) => {
+    execFile(
+      'docker',
+      [
+        'run',
+        `-v${fromDir}:/from`,
+        `-v${toDir}:/to`,
+        `-v${diffDir}:/diff`,
+        'docker.io/library/courgette',
+        '/build/out/courgette',
+        '-gen',
+        `/from/${fromFile}`,
+        `/to/${toFile}`,
+        `/diff/${diffFile}`
+      ],
+      (error, stdout, stderr) => {
+        if (error) {
+          console.log(stdout)
+          console.log(stderr)
+          reject(error)
+        }
+        resolve()
+      }
+    )
+  })
+}
+
+export function zstd(from: string, to: string, level = 17): Promise<void> {
+  return new Promise((resolve, reject) => {
+    execFile('zstd', [`-${level}`, from, '-o', to], (error, stdout, stderr) => {
+      if (error) {
+        console.log(stdout)
+        console.log(stderr)
+        reject(error)
+      }
+      resolve()
+    })
+  })
+}

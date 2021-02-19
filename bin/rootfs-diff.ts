@@ -6,7 +6,7 @@ import util from 'util'
 const mkdirAsync = util.promisify(fs.mkdir)
 const lstatAsync = util.promisify(fs.lstat)
 
-import { bsdiff, File, listFolder } from '../src/rootfs-diff'
+import { bsdiff, courgette, File, listFolder, zstd } from '../src/rootfs-diff'
 
 const soEndingRegex = /(?:-\d+(?:\.\d+){0,3}\.so|\.so(?:\.\d+){1,3})$/
 const soBaseNameRegex = new RegExp(`^(.+)${soEndingRegex.source}`)
@@ -23,7 +23,14 @@ async function main(args: string[]): Promise<number> {
   const toFiles = await listFolder(toPath)
 
   const newFiles: File[] = []
-  const updatedFiles: Array<{ from: File; to: File; diff: number; patch: number }> = []
+  const updatedFiles: Array<{
+    from: File
+    to: File
+    sizeDiff: number
+    bsDiffSize: number
+    courgetteDiffSize: number
+    courgetteZstdDiffSize: number
+  }> = []
   const sameFiles: Array<{ from: File; to: File }> = []
   for (const toFile of toFiles) {
     const soBaseNameMatch = toFile.path.match(soBaseNameRegex)
@@ -48,7 +55,39 @@ async function main(args: string[]): Promise<number> {
       if (fromFile[0].sha1sum === toFile.sha1sum) {
         sameFiles.push({ from: fromFile[0], to: toFile })
       } else {
-        updatedFiles.push({ from: fromFile[0], to: toFile, diff: toFile.size - fromFile[0].size, patch: -1 })
+        const bsDiffFile = `${diffCachePath}/${fromFile[0].sha1sum}-${toFile.sha1sum}.bsdiff`
+        let bsDiffFileStat = await lstatAsync(bsDiffFile).catch(() => null)
+        if (bsDiffFileStat === null) {
+          console.time(`bsdiff ${fromFile[0].fullPath} ${toFile.fullPath}`)
+          await bsdiff(fromFile[0].fullPath, toFile.fullPath, bsDiffFile)
+          bsDiffFileStat = await lstatAsync(bsDiffFile).catch(() => null)
+        }
+        const bsDiffSize = bsDiffFileStat?.size ? bsDiffFileStat?.size : -1
+
+        const courgetteFile = `${diffCachePath}/${fromFile[0].sha1sum}-${toFile.sha1sum}.courgette`
+        let courgetteFileStat = await lstatAsync(courgetteFile).catch(() => null)
+        if (courgetteFileStat === null) {
+          await courgette(fromFile[0].fullPath, toFile.fullPath, courgetteFile)
+          courgetteFileStat = await lstatAsync(courgetteFile).catch(() => null)
+        }
+        const courgetteDiffSize = courgetteFileStat?.size ? courgetteFileStat?.size : -1
+
+        const courgetteZstdFile = `${diffCachePath}/${fromFile[0].sha1sum}-${toFile.sha1sum}.courgette.zstd`
+        let courgetteZstdFileStat = await lstatAsync(courgetteZstdFile).catch(() => null)
+        if (courgetteZstdFileStat === null) {
+          await zstd(courgetteFile, courgetteZstdFile)
+          courgetteZstdFileStat = await lstatAsync(courgetteZstdFile).catch(() => null)
+        }
+        const courgetteZstdDiffSize = courgetteZstdFileStat?.size ? courgetteZstdFileStat?.size : -1
+
+        updatedFiles.push({
+          from: fromFile[0],
+          to: toFile,
+          sizeDiff: toFile.size - fromFile[0].size,
+          bsDiffSize: bsDiffSize,
+          courgetteDiffSize: courgetteDiffSize,
+          courgetteZstdDiffSize: courgetteZstdDiffSize
+        })
       }
     } else {
       console.log(`Found more then one from file match: ${fromFile.map(f => f.path).join(', ')}`)
@@ -74,18 +113,13 @@ async function main(args: string[]): Promise<number> {
   }
 
   console.log(`Updated files`)
-  for (const updatedFile of updatedFiles.sort((a, b) => b.diff - a.diff)) {
-    const diffFile = `${diffCachePath}/${updatedFile.from.sha1sum}-${updatedFile.to.sha1sum}.diff`
-    let fileStat = await lstatAsync(diffFile).catch(() => null)
-    if (fileStat === null) {
-      await bsdiff(updatedFile.from.fullPath, updatedFile.to.fullPath, diffFile)
-      fileStat = await lstatAsync(diffFile).catch(() => null)
-    }
-    updatedFile.patch = fileStat?.size ? fileStat?.size : -1
+  for (const updatedFile of updatedFiles.sort((a, b) => b.bsDiffSize - a.bsDiffSize)) {
     console.log(
       `  ${updatedFile.to.path}${updatedFile.from.path !== updatedFile.to.path ? `(${updatedFile.from.path})` : ''}: ${
         updatedFile.from.size
-      } -> ${updatedFile.to.size} (diff:${updatedFile.diff}, patch:${updatedFile.patch})`
+      } -> ${updatedFile.to.size} (diff:${updatedFile.sizeDiff}, bsdiff:${updatedFile.bsDiffSize}, courgette: ${
+        updatedFile.courgetteDiffSize
+      }, courgette-zstd: ${updatedFile.courgetteZstdDiffSize}))`
     )
   }
 
@@ -106,10 +140,14 @@ async function main(args: string[]): Promise<number> {
 
   const totalUpdatedFromSize = updatedFiles.map(f => f.from.size).reduce((a, c) => a + c)
   const totalUpdatedToSize = updatedFiles.map(f => f.to.size).reduce((a, c) => a + c)
+  const totalUpdateBsDiffSize = updatedFiles.map(f => f.bsDiffSize).reduce((a, c) => a + c)
+  const totalUpdateCourgetteSize = updatedFiles.map(f => f.courgetteDiffSize).reduce((a, c) => a + c)
+  const totalUpdateCourgetteZstdSize = updatedFiles.map(f => f.courgetteZstdDiffSize).reduce((a, c) => a + c)
+
   console.log(
-    ` updated files size     : ${totalUpdatedFromSize} -> ${totalUpdatedToSize} (${
+    ` updated files size     : ${totalUpdatedFromSize} -> ${totalUpdatedToSize} (diff: ${
       totalUpdatedToSize - totalUpdatedFromSize
-    })`
+    }, bsdiff: ${totalUpdateBsDiffSize}, courgette: ${totalUpdateCourgetteSize}, courgette-zstd: ${totalUpdateCourgetteZstdSize})`
   )
 
   return 0
