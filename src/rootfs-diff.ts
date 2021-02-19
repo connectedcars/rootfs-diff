@@ -6,7 +6,6 @@ import util from 'util'
 
 const readdirAsync = util.promisify(fs.readdir)
 const lstatAsync = util.promisify(fs.lstat)
-const chmodAsync = util.promisify(fs.chmod)
 
 export interface File {
   fullPath: string
