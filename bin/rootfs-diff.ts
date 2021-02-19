@@ -99,11 +99,13 @@ async function main(args: string[]): Promise<number> {
   const groupSeen: Record<string, boolean> = {}
   for (const groupRegex of groups) {
     const found = newFiles.filter(f => !groupSeen[f.path] && f.path.match(groupRegex))
+    if (found.length > 0) {
     console.log(`  ${groupRegex}: ${found.map(f => f.size).reduce((a, c) => a + c)}`)
     for (const file of found) {
       console.log(`    ${file.path}: ${file.size}`)
       groupSeen[file.path] = true
     }
+  }
   }
 
   const singleNewFiles = newFiles.filter(f => !groupSeen[f.path])
@@ -127,22 +129,37 @@ async function main(args: string[]): Promise<number> {
   const totalSameFilesSize = sameFiles.map(f => f.to.size).reduce((a, c) => a + c)
   console.log(` unchanged files size   : ${totalSameFilesSize}`)
 
-  const totalNewFilesSize = newFiles.map(f => f.size).reduce((a, c) => a + c)
-  console.log(` new files size         : ${totalNewFilesSize}`)
-
-  const totalGroupSize = newFiles
+  let totalNewFilesSize = 0
+  let totalGroupSize = 0
+  if (newFiles.length > 0) {
+    totalNewFilesSize = newFiles.map(f => f.size).reduce((a, c) => a + c)
+    totalGroupSize = newFiles
     .filter(f => groupSeen[f.path])
     .map(f => f.size)
     .reduce((a, c) => a + c)
+  }
+
+  let singleNewFilesSize = 0
+  if (singleNewFiles.length > 0) {
+    singleNewFilesSize = singleNewFiles.map(f => f.size).reduce((a, c) => a + c)
+  }
+
+  console.log(` new files size         : ${totalNewFilesSize}`)
   console.log(`   grouped : ${totalGroupSize}`)
-  const singleNewFilesSize = singleNewFiles.map(f => f.size).reduce((a, c) => a + c)
   console.log(`   single  : ${singleNewFilesSize}`)
 
-  const totalUpdatedFromSize = updatedFiles.map(f => f.from.size).reduce((a, c) => a + c)
-  const totalUpdatedToSize = updatedFiles.map(f => f.to.size).reduce((a, c) => a + c)
-  const totalUpdateBsDiffSize = updatedFiles.map(f => f.bsDiffSize).reduce((a, c) => a + c)
-  const totalUpdateCourgetteSize = updatedFiles.map(f => f.courgetteDiffSize).reduce((a, c) => a + c)
-  const totalUpdateCourgetteZstdSize = updatedFiles.map(f => f.courgetteZstdDiffSize).reduce((a, c) => a + c)
+  let totalUpdatedFromSize = 0
+  let totalUpdatedToSize = 0
+  let totalUpdateBsDiffSize = 0
+  let totalUpdateCourgetteSize = 0
+  let totalUpdateCourgetteZstdSize = 0
+  if (updatedFiles.length > 0) {
+    totalUpdatedFromSize = updatedFiles.map(f => f.from.size).reduce((a, c) => a + c)
+    totalUpdatedToSize = updatedFiles.map(f => f.to.size).reduce((a, c) => a + c)
+    totalUpdateBsDiffSize = updatedFiles.map(f => f.bsDiffSize).reduce((a, c) => a + c)
+    totalUpdateCourgetteSize = updatedFiles.map(f => f.courgetteDiffSize).reduce((a, c) => a + c)
+    totalUpdateCourgetteZstdSize = updatedFiles.map(f => f.courgetteZstdDiffSize).reduce((a, c) => a + c)
+  }
 
   console.log(
     ` updated files size     : ${totalUpdatedFromSize} -> ${totalUpdatedToSize} (diff: ${
