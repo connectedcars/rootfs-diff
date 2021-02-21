@@ -21,6 +21,9 @@
     "prepack": "npm run build",
     "prepublishOnly": "rm -rf build"
   },
+  "files": [
+    "build/dist"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/connectedcars/rootfs-diff.git"
