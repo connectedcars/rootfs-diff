@@ -118,7 +118,7 @@ export function courgette(from: string, to: string, diff: string): Promise<void>
   })
 }
 
-export function diffoscope(from: string, to: string, diff: string): Promise<void> {
+export function diffoscope(from: string, to: string): Promise<void> {
   const [fromDir, fromFile] = [path.dirname(from), path.basename(from)]
   const [toDir, toFile] = [path.dirname(to), path.basename(to)]
 
