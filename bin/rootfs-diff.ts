@@ -338,7 +338,7 @@ async function main(argv: string[]): Promise<number> {
     }
   }
 
-  const singleRemovedFiles = removedFiles.filter(f => !groupNewSeen[f.from.path])
+  const singleRemovedFiles = removedFiles.filter(f => !groupRemovedSeen[f.from.path])
   console.log(`Single removed files:`)
   for (const file of singleRemovedFiles.sort((a, b) => b.from.size - a.from.size)) {
     console.log(`  ${file.from.path}: (size: ${file.from.size}, zstd: ${file.zstdSize})`)
