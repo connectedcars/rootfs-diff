@@ -1,30 +1,11 @@
 {
+  "name": "@connectedcars/rootfs-diff",
+  "version": "1.0.0",
+  "description": "Tool to compare yocto root fs to see what grows a binary diff",
   "bin": {
     "rootfs-diff": "build/dist/bin/rootfs-diff.js"
   },
-  "devDependencies": {
-    "@babel/cli": "7.12.13",
-    "@babel/core": "7.12.13",
-    "@babel/plugin-proposal-class-properties": "7.12.13",
-    "@babel/plugin-proposal-nullish-coalescing-operator": "^7.12.13",
-    "@babel/plugin-proposal-numeric-separator": "7.12.13",
-    "@babel/plugin-proposal-optional-chaining": "7.12.13",
-    "@babel/preset-env": "7.12.13",
-    "@babel/preset-typescript": "7.12.13",
-    "@connectedcars/setup": "^0.13.0",
-    "@types/jest": "26.0.20",
-    "@typescript-eslint/eslint-plugin": "4.15.0",
-    "@typescript-eslint/parser": "4.15.0",
-    "babel-jest": "26.6.3",
-    "eslint": "7.19.0",
-    "eslint-config-prettier": "7.2.0",
-    "eslint-plugin-prettier": "3.3.1",
-    "eslint-plugin-simple-import-sort": "^7.0.0",
-    "jest": "26.6.3",
-    "jest-circus": "^26.6.3",
-    "prettier": "2.2.1",
-    "typescript": "4.1.5"
-  },
+  "main": "build/dist/src/index.js",
   "scripts": {
     "test": "TZ=UTC jest",
     "cov": "TZ=UTC jest --coverage=true",
@@ -40,7 +21,44 @@
     "prepack": "npm run build",
     "prepublishOnly": "rm -rf build"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/connectedcars/rootfs-diff.git"
+  },
+  "author": "Troels Liebe Bentsen <tlb@connectedcars.io>",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/connectedcars/rootfs-diff/issues"
+  },
+  "homepage": "https://github.com/connectedcars/rootfs-diff#readme",
+  "devDependencies": {
+    "@babel/cli": "7.12.13",
+    "@babel/core": "7.12.13",
+    "@babel/plugin-proposal-class-properties": "7.12.13",
+    "@babel/plugin-proposal-nullish-coalescing-operator": "^7.12.13",
+    "@babel/plugin-proposal-numeric-separator": "7.12.13",
+    "@babel/plugin-proposal-optional-chaining": "7.12.13",
+    "@babel/preset-env": "7.12.13",
+    "@babel/preset-typescript": "7.12.13",
+    "@connectedcars/setup": "^0.13.0",
+    "@types/jest": "26.0.20",
+    "@types/yargs": "^15.0.13",
+    "@typescript-eslint/eslint-plugin": "4.15.0",
+    "@typescript-eslint/parser": "4.15.0",
+    "babel-jest": "26.6.3",
+    "eslint": "7.19.0",
+    "eslint-config-prettier": "7.2.0",
+    "eslint-plugin-prettier": "3.3.1",
+    "eslint-plugin-simple-import-sort": "^7.0.0",
+    "jest": "26.6.3",
+    "jest-circus": "^26.6.3",
+    "prettier": "2.2.1",
+    "typescript": "4.1.5"
+  },
   "engines": {
-    "node": ">=10.15.0"
+    "node": ">=12.10.0"
+  },
+  "dependencies": {
+    "yargs": "^16.2.0"
   }
 }
