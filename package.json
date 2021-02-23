@@ -1,6 +1,6 @@
 {
   "name": "@connectedcars/rootfs-diff",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Tool to compare yocto root fs to see what grows a binary diff",
   "bin": {
     "rootfs-diff": "build/dist/bin/rootfs-diff.js"
