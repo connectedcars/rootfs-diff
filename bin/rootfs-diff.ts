@@ -69,7 +69,11 @@ const soEndingRegex = /(?:-\d+(?:\.\d+){0,3}\.so|\.so(?:\.\d+){1,3})$/
 const soBaseNameRegex = new RegExp(`^(.+)${soEndingRegex.source}`)
 const soEndingRegexStrict = new RegExp(`^${soEndingRegex.source}`)
 
-// TODO: Make mapping table for symlinks so we track "cansend -> cansend.can-utils" changes
+function print(msg: string, noOutput = false): void {
+  if (!noOutput) {
+    console.log(msg)
+  }
+}
 
 async function main(argv: string[]): Promise<number> {
   const { _: inputArgs, ...flags } = yargs
@@ -97,6 +101,11 @@ async function main(argv: string[]): Promise<number> {
         type: 'string',
         default: [] as string[], // Typings are broken, this removes undefined from the type
         coerce: (s: string | string[]) => (Array.isArray(s) ? s : [s])
+      },
+      hideGroups: {
+        describe: 'Hide files matching groups',
+        type: 'boolean',
+        default: false
       },
       cacheDir: {
         describe: 'Location to store cache files',
@@ -155,26 +164,55 @@ async function main(argv: string[]): Promise<number> {
   const fromFiles = await listFolder(fromPath)
   const toFiles = await listFolder(toPath)
 
+  // from sudo
+  // to: sudo -> sudo.stuff
+
+  // from sudo -> sudo.stuff
+  // to: sudo
+
   const newFiles: NewFile[] = []
   const updatedFiles: UpdateFile[] = []
   const sameFiles: SameFile[] = []
-  for (const toFile of toFiles) {
-    const soBaseNameMatch = toFile.path.match(soBaseNameRegex)
+  const toAliases: Record<string, string[]> = {}
+  const fromAliases: Record<string, string[]> = {}
 
-    const fromFile = fromFiles.filter(f => {
-      if (f.path === toFile.path) {
-        return true
-      } else if (
-        soBaseNameMatch &&
-        f.path.startsWith(soBaseNameMatch[1]) &&
-        f.path.slice(soBaseNameMatch[1].length).match(soEndingRegexStrict)
-      ) {
-        return true
-      } else if (f.path.replace(/\/libexec\//, '/lib/') === toFile.path.replace(/\/libexec\//, '/lib/')) {
-        return true
-      }
-      return false
-    })
+  // Build alias lookup table for all symlinks
+  for (const toFile of toFiles.filter(f => f.isSymbolicLink)) {
+    const fileAliases = toAliases[toFile.symlinkPath]
+      ? toAliases[toFile.symlinkPath]
+      : (toAliases[toFile.symlinkPath] = [])
+    fileAliases.push(toFile.path)
+  }
+  for (const fromFile of fromFiles.filter(f => f.isSymbolicLink)) {
+    const fileAliases = fromAliases[fromFile.symlinkPath]
+      ? toAliases[fromFile.symlinkPath]
+      : (toAliases[fromFile.symlinkPath] = [])
+    fileAliases.push(fromFile.path)
+  }
+
+  // Compare toFiles to fromFiles
+  for (const toFile of toFiles.filter(f => f.isFile)) {
+    const soBaseNameMatch = toFile.path.match(soBaseNameRegex)
+    let fromFile = fromFiles
+      .filter(f => f.isFile)
+      .filter(f => {
+        if (f.path === toFile.path) {
+          return true
+        } else if (
+          soBaseNameMatch &&
+          f.path.startsWith(soBaseNameMatch[1]) &&
+          f.path.slice(soBaseNameMatch[1].length).match(soEndingRegexStrict)
+        ) {
+          return true
+        } else if (f.path.replace(/\/libexec\//, '/lib/') === toFile.path.replace(/\/libexec\//, '/lib/')) {
+          return true
+        } else if (toAliases[toFile.path]?.some(a => a === f.path)) {
+          return true
+        } else if (fromAliases[f.path]?.some(a => a === toFile.path)) {
+          return true
+        }
+        return false
+      })
 
     if (fromFile.length === 0) {
       const toFileSha1Sum = (await sha1File(toFile.fullPath)).toString('hex')
@@ -187,9 +225,16 @@ async function main(argv: string[]): Promise<number> {
       }
       newFiles.push({ to: toFile, zstdTime, zstdSize: zstdSize })
     } else {
+      // Handle the case where a file is replaced by symlink to an existing file
       if (fromFile.length > 1) {
-        console.log(`Found more then one from file match: ${fromFile.map(f => f.path).join(', ')}`)
+        const filteredFrom = fromFile.filter(f => f.path === toFile.path)
+        if (filteredFrom.length === 1) {
+          fromFile = filteredFrom
+        } else {
+          console.log(`Found more then one from file match: ${fromFile.map(f => f.path).join(', ')}`)
+        }
       }
+
       const fromFileSha1Sum = (await sha1File(fromFile[0].fullPath)).toString('hex')
       const toFileSha1Sum = (await sha1File(toFile.fullPath)).toString('hex')
 
@@ -251,7 +296,7 @@ async function main(argv: string[]): Promise<number> {
   }
 
   const removedFiles: RemovedFile[] = []
-  for (const fromFile of fromFiles) {
+  for (const fromFile of fromFiles.filter(f => f.isFile)) {
     if (sameFiles.find(f => f.from.path == fromFile.path)) {
       continue
     } else if (updatedFiles.find(f => f.from.path == fromFile.path)) {
@@ -270,16 +315,16 @@ async function main(argv: string[]): Promise<number> {
     removedFiles.push({ from: fromFile, zstdSize, zstdTime })
   }
 
-  console.log(`Grouped new files:`)
   const groupNewSeen: Record<string, boolean> = {}
+  print(`Grouped new files:`, flags.hideGroups)
   for (const groupRegex of groups) {
     const found = newFiles.filter(f => !groupNewSeen[f.to.path] && f.to.path.match(groupRegex))
     if (found.length > 0) {
       const totalSize = found.map(f => f.to.size).reduce((a, c) => a + c, 0)
       const totalZstdSize = found.map(f => f.zstdSize).reduce((a, c) => a + c, 0)
-      console.log(`  ${groupRegex}: (size: ${totalSize}, zstd: ${totalZstdSize})`)
+      print(`  ${groupRegex}: (size: ${totalSize}, zstd: ${totalZstdSize})`, flags.hideGroups)
       for (const file of found) {
-        console.log(`    ${file.to.path}: (size: ${file.to.size}, zstd: ${file.zstdSize})`)
+        print(`    ${file.to.path}: (size: ${file.to.size}, zstd: ${file.zstdSize})`, flags.hideGroups)
         groupNewSeen[file.to.path] = true
       }
     }
@@ -291,16 +336,16 @@ async function main(argv: string[]): Promise<number> {
     console.log(`  ${file.to.path}: (size: ${file.to.size}, zstd: ${file.zstdSize})`)
   }
 
-  console.log(`Grouped removed files:`)
+  print(`Grouped removed files:`, flags.hideGroups)
   const groupRemovedSeen: Record<string, boolean> = {}
   for (const groupRegex of groups) {
     const found = removedFiles.filter(f => !groupRemovedSeen[f.from.path] && f.from.path.match(groupRegex))
     if (found.length > 0) {
       const totalSize = found.map(f => f.from.size).reduce((a, c) => a + c, 0)
       const totalZstdSize = found.map(f => f.zstdSize).reduce((a, c) => a + c, 0)
-      console.log(`  ${groupRegex}: (size: ${totalSize}, zstd: ${totalZstdSize})`)
+      print(`  ${groupRegex}: (size: ${totalSize}, zstd: ${totalZstdSize})`, flags.hideGroups)
       for (const file of found) {
-        console.log(`    ${file.from.path}: (size: ${file.from.size}, zstd: ${file.zstdSize})`)
+        print(`    ${file.from.path}: (size: ${file.from.size}, zstd: ${file.zstdSize})`, flags.hideGroups)
         groupRemovedSeen[file.from.path] = true
       }
     }
@@ -320,7 +365,7 @@ async function main(argv: string[]): Promise<number> {
     )
   }
 
-  console.log(`Grouped files:`)
+  print(`Grouped files:`, flags.hideGroups)
   const groupToSeen: Record<string, boolean> = {}
   for (const groupRegex of groups) {
     const found: NewFile[] = []
@@ -333,9 +378,9 @@ async function main(argv: string[]): Promise<number> {
     if (found.length > 0) {
       const totalSize = found.map(f => f.to.size).reduce((a, c) => a + c, 0)
       const totalZstdSize = found.map(f => f.zstdSize).reduce((a, c) => a + c, 0)
-      console.log(`  ${groupRegex}: (size: ${totalSize}, zstd: ${totalZstdSize})`)
+      print(`  ${groupRegex}: (size: ${totalSize}, zstd: ${totalZstdSize})`, flags.hideGroups)
       for (const file of found) {
-        console.log(`    ${file.to.path}: (size: ${file.to.size}, zstd: ${file.zstdSize})`)
+        print(`    ${file.to.path}: (size: ${file.to.size}, zstd: ${file.zstdSize})`, flags.hideGroups)
       }
     }
   }

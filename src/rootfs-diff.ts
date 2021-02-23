@@ -8,12 +8,32 @@ const readdirAsync = util.promisify(fs.readdir)
 const lstatAsync = util.promisify(fs.lstat)
 const renameAsync = util.promisify(fs.rename)
 const chmodAsync = util.promisify(fs.chmod)
+const readlinkAsync = util.promisify(fs.readlink)
 
 export interface File {
   fullPath: string
   path: string
-  size: number
+  dev: number
+  ino: number
   mode: number
+  nlink: number
+  uid: number
+  gid: number
+  rdev: number
+  size: number
+  blksize: number
+  blocks: number
+  atimeMs: number
+  mtimeMs: number
+  ctimeMs: number
+  birthtimeMs: number
+  atime: Date
+  mtime: Date
+  ctime: Date
+  birthtime: Date
+  isSymbolicLink: boolean
+  isFile: boolean
+  symlinkPath: string
 }
 
 export async function listFolder(rootPath: string): Promise<File[]> {
@@ -30,14 +50,26 @@ export async function listFolder(rootPath: string): Promise<File[]> {
       }
       if (fileStat.isDirectory()) {
         dirs.push(filePath)
-      } else if (fileStat.isFile()) {
+      } else if (fileStat.isFile() || fileStat.isSymbolicLink()) {
         const relativeFilePath = path.relative(rootPath, filePath)
 
+        let symlinkPath = ''
+        if (fileStat.isSymbolicLink()) {
+          const rawLinkPath = await readlinkAsync(filePath)
+          if (rawLinkPath.match(/^\//)) {
+            symlinkPath = rawLinkPath.replace(/^\//, '')
+          } else {
+            symlinkPath = path.relative(rootPath, path.resolve(dir, rawLinkPath))
+          }
+        }
+
         results.push({
+          ...fileStat,
           fullPath: filePath,
           path: relativeFilePath,
-          size: fileStat.size,
-          mode: fileStat.mode
+          isFile: fileStat.isFile(),
+          isSymbolicLink: fileStat.isSymbolicLink(),
+          symlinkPath
         })
       }
     }
@@ -277,7 +309,7 @@ export async function unsquashfs(from: string, to: string, options?: UnsquashfsO
       const files = await listFolder(toTmp)
       // Fix permissions if some of the files are missing read permission, fx. sudo
       for (const file of files) {
-        if ((file.mode & 0o400) === 0) {
+        if (!file.isFile && (file.mode & 0o400) === 0) {
           await chmodAsync(file.fullPath, file.mode | 0o400)
         }
       }
