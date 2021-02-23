@@ -8,7 +8,6 @@ import yargs from 'yargs'
 
 const mkdirAsync = util.promisify(fs.mkdir)
 const lstatAsync = util.promisify(fs.lstat)
-const chmodAsync = util.promisify(fs.chmod)
 
 import {
   bsdiff,
@@ -20,6 +19,7 @@ import {
   hasZstd,
   listFolder,
   sha1File,
+  time,
   unsquashfs,
   unZstd,
   zstd
@@ -35,13 +35,13 @@ export class CommandLineError extends Error {
 interface NewFile {
   to: File
   zstdSize: number
-  zstdTime: number[] | null
+  zstdTime: number | null
 }
 
 interface RemovedFile {
   from: File
   zstdSize: number
-  zstdTime: number[] | null
+  zstdTime: number | null
 }
 
 interface SameFile {
@@ -54,18 +54,20 @@ interface UpdateFile {
   to: File
   sizeDiff: number
   zstdSize: number
-  zstdTime: number[] | null
+  zstdTime: number | null
   bsDiffSize: number
-  bsDiffTime: number[] | null
+  bsDiffTime: number | null
   courgetteDiffSize: number
-  courgetteTime: number[] | null
+  courgetteTime: number | null
   courgetteZstdDiffSize: number
-  courgetteZstdTime: number[] | null
+  courgetteZstdTime: number | null
 }
 
 const soEndingRegex = /(?:-\d+(?:\.\d+){0,3}\.so|\.so(?:\.\d+){1,3})$/
 const soBaseNameRegex = new RegExp(`^(.+)${soEndingRegex.source}`)
 const soEndingRegexStrict = new RegExp(`^${soEndingRegex.source}`)
+
+// TODO: Make mapping table for symlinks so we track "cansend -> cansend.can-utils" changes
 
 async function main(argv: string[]): Promise<number> {
   const { _: inputArgs, ...flags } = yargs
@@ -93,6 +95,10 @@ async function main(argv: string[]): Promise<number> {
         type: 'string',
         default: [] as string[], // Typings are broken, this removes undefined from the type
         coerce: (s: string | string[]) => (Array.isArray(s) ? s : [s])
+      },
+      cacheDir: {
+        describe: 'Location to store cache files',
+        type: 'string'
       }
     })
     .help()
@@ -108,9 +114,9 @@ async function main(argv: string[]): Promise<number> {
 
   const groups: RegExp[] = flags.group.map(g => new RegExp(g))
 
-  const diffCachePath = os.tmpdir() + path.sep + 'rootfs-diff'
-  await mkdirAsync(diffCachePath, { recursive: true })
-  console.log(`Using cache folder: ${diffCachePath}`)
+  const diffCacheDir = flags.cacheDir ? flags.cacheDir : os.tmpdir() + path.sep + 'rootfs-diff'
+  await mkdirAsync(diffCacheDir, { recursive: true })
+  console.log(`Using cache folder: ${diffCacheDir}`)
 
   const useBsdiff = flags.useBsdiff && (await hasBsdiff())
   const useCourgette = flags.useCourgette && (await hasCourgette())
@@ -128,24 +134,14 @@ async function main(argv: string[]): Promise<number> {
       let squashfsFile = rootfsPath
       const sha1Sum = await sha1File(rootfsPath)
       if (rootfsPath.match(/\.zst[d]?$/)) {
-        squashfsFile = `${diffCachePath}/${sha1Sum.toString('hex')}.squashfs`
-        const squashfsFileStat = await lstatAsync(squashfsFile).catch(() => null)
-        if (squashfsFileStat === null) {
-          await unZstd(rootfsPath, squashfsFile)
-        }
+        squashfsFile = `${diffCacheDir}/${sha1Sum.toString('hex')}.squashfs`
+        await unZstd(rootfsPath, squashfsFile)
       }
-      const rootfsCachePath = `${diffCachePath}/${sha1Sum.toString('hex')}.rootfs`
-      const rootfsCacheStat = await lstatAsync(rootfsCachePath).catch(() => null)
-      if (rootfsCacheStat === null) {
-        await unsquashfs(squashfsFile, rootfsCachePath)
-        const files = await listFolder(rootfsCachePath)
-        // Fix permissions if some of the files are missing read permission, fx. sudo
-        for (const file of files) {
-          if ((file.mode & 0o400) === 0) {
-            await chmodAsync(file.fullPath, file.mode | 0o400)
-          }
-        }
-      }
+
+      // TODO: Handle that MacOS wipes the files but not the folder in tmp
+      // https://superuser.com/questions/187071/in-macos-how-often-is-tmp-deleted
+      const rootfsCachePath = `${diffCacheDir}/${sha1Sum.toString('hex')}.rootfs`
+      await unsquashfs(squashfsFile, rootfsCachePath, { fixPermissions: true })
       paths.push(rootfsCachePath)
     } else {
       paths.push(rootfsPath)
@@ -181,19 +177,13 @@ async function main(argv: string[]): Promise<number> {
     if (fromFile.length === 0) {
       const toFileSha1Sum = (await sha1File(toFile.fullPath)).toString('hex')
       let zstdSize = 0
-      let zstdTime: number[] | null = null
+      let zstdTime: number | null = null
       if (useZstd) {
-        const zstdFile = `${diffCachePath}/${toFileSha1Sum}.zstd`
-        let zstdFileStat = await lstatAsync(zstdFile).catch(() => null)
-        if (zstdFileStat === null) {
-          const courgetteZstdStartTime = process.hrtime()
-          await zstd(toFile.fullPath, zstdFile)
-          zstdTime = process.hrtime(courgetteZstdStartTime)
-          zstdFileStat = await lstatAsync(zstdFile).catch(() => null)
-        }
-        zstdSize = zstdFileStat!.size
+        const [zstdFileStat, runTime] = await time(zstd(toFile.fullPath, `${diffCacheDir}/${toFileSha1Sum}.zstd`))
+        zstdSize = zstdFileStat.size
+        zstdTime = runTime
       }
-      newFiles.push({ to: toFile, zstdTime, zstdSize })
+      newFiles.push({ to: toFile, zstdTime, zstdSize: zstdSize })
     } else {
       if (fromFile.length > 1) {
         console.log(`Found more then one from file match: ${fromFile.map(f => f.path).join(', ')}`)
@@ -204,57 +194,38 @@ async function main(argv: string[]): Promise<number> {
         sameFiles.push({ from: fromFile[0], to: toFile })
       } else {
         let zstdSize = 0
-        let zstdTime: number[] | null = null
+        let zstdTime: number | null = null
         if (useZstd) {
-          const zstdFile = `${diffCachePath}/${toFileSha1Sum}.zstd`
-          let zstdFileStat = await lstatAsync(zstdFile).catch(() => null)
-          if (zstdFileStat === null) {
-            const courgetteZstdStartTime = process.hrtime()
-            await zstd(toFile.fullPath, zstdFile)
-            zstdTime = process.hrtime(courgetteZstdStartTime)
-            zstdFileStat = await lstatAsync(zstdFile).catch(() => null)
-          }
-          zstdSize = zstdFileStat!.size
+          const [zstdFileStat, runTime] = await time(zstd(toFile.fullPath, `${diffCacheDir}/${toFileSha1Sum}.zstd`))
+          zstdSize = zstdFileStat.size
+          zstdTime = runTime
         }
 
         let bsDiffSize = 0
-        let bsDiffTime: number[] | null = null
+        let bsDiffTime: number | null = null
         if (useBsdiff) {
-          const bsDiffFile = `${diffCachePath}/${fromFileSha1Sum}-${toFileSha1Sum}.bsdiff`
-          let bsDiffFileStat = await lstatAsync(bsDiffFile).catch(() => null)
-          if (bsDiffFileStat === null) {
-            const bsDiffStartTime = process.hrtime()
-            await bsdiff(fromFile[0].fullPath, toFile.fullPath, bsDiffFile)
-            bsDiffFileStat = await lstatAsync(bsDiffFile).catch(() => null)
-            bsDiffTime = process.hrtime(bsDiffStartTime)
-          }
-          bsDiffSize = bsDiffFileStat!.size
+          const bsDiffFile = `${diffCacheDir}/${fromFileSha1Sum}-${toFileSha1Sum}.bsdiff`
+          const [bsDiffFileStat, runTime] = await time(bsdiff(fromFile[0].fullPath, toFile.fullPath, bsDiffFile))
+          bsDiffSize = bsDiffFileStat.size
+          bsDiffTime = runTime
         }
 
         let courgetteDiffSize = 0
         let courgetteZstdDiffSize = 0
-        let courgetteTime: number[] | null = null
-        let courgetteZstdTime: number[] | null = null
+        let courgetteTime: number | null = null
+        let courgetteZstdTime: number | null = null
         if (useCourgette) {
-          const courgetteFile = `${diffCachePath}/${fromFileSha1Sum}-${toFileSha1Sum}.courgette`
-          let courgetteFileStat = await lstatAsync(courgetteFile).catch(() => null)
-          if (courgetteFileStat === null) {
-            const courgetteStartTime = process.hrtime()
-            await courgette(fromFile[0].fullPath, toFile.fullPath, courgetteFile)
-            courgetteFileStat = await lstatAsync(courgetteFile).catch(() => null)
-            courgetteTime = process.hrtime(courgetteStartTime)
-          }
+          const courgetteFile = `${diffCacheDir}/${fromFileSha1Sum}-${toFileSha1Sum}.courgette`
+          const [courgetteFileStat, runTime] = await time(
+            courgette(fromFile[0].fullPath, toFile.fullPath, courgetteFile)
+          )
+          courgetteTime = runTime
           courgetteDiffSize = courgetteFileStat!.size
 
           if (useZstd) {
-            const courgetteZstdFile = `${diffCachePath}/${fromFileSha1Sum}-${toFileSha1Sum}.courgette.zstd`
-            let courgetteZstdFileStat = await lstatAsync(courgetteZstdFile).catch(() => null)
-            if (courgetteZstdFileStat === null) {
-              const courgetteZstdStartTime = process.hrtime()
-              await zstd(courgetteFile, courgetteZstdFile)
-              courgetteZstdTime = process.hrtime(courgetteZstdStartTime)
-              courgetteZstdFileStat = await lstatAsync(courgetteZstdFile).catch(() => null)
-            }
+            const courgetteZstdFile = `${diffCacheDir}/${fromFileSha1Sum}-${toFileSha1Sum}.courgette.zstd`
+            const [courgetteZstdFileStat, runTime] = await time(zstd(courgetteFile, courgetteZstdFile))
+            courgetteZstdTime = runTime
             courgetteZstdDiffSize = courgetteZstdFileStat!.size
           }
         }
@@ -286,17 +257,11 @@ async function main(argv: string[]): Promise<number> {
     const fromFileSha1Sum = (await sha1File(fromFile.fullPath)).toString('hex')
 
     let zstdSize = 0
-    let zstdTime: number[] | null = null
+    let zstdTime: number | null = null
     if (useZstd) {
-      const zstdFile = `${diffCachePath}/${fromFileSha1Sum}.zstd`
-      let zstdFileStat = await lstatAsync(zstdFile).catch(() => null)
-      if (zstdFileStat === null) {
-        const courgetteZstdStartTime = process.hrtime()
-        await zstd(fromFile.fullPath, zstdFile)
-        zstdTime = process.hrtime(courgetteZstdStartTime)
-        zstdFileStat = await lstatAsync(zstdFile).catch(() => null)
-      }
-      zstdSize = zstdFileStat!.size
+      const [zstdFileStat, runTime] = await time(zstd(fromFile.fullPath, `${diffCacheDir}/${fromFileSha1Sum}.zstd`))
+      zstdSize = zstdFileStat.size
+      zstdTime = runTime
     }
 
     removedFiles.push({ from: fromFile, zstdSize, zstdTime })
@@ -392,6 +357,7 @@ async function main(argv: string[]): Promise<number> {
 
   const totalUpdatedFromSize = updatedFiles.map(f => f.from.size).reduce((a, c) => a + c, 0)
   const totalUpdatedToSize = updatedFiles.map(f => f.to.size).reduce((a, c) => a + c, 0)
+  const totalUpdateZstdSize = updatedFiles.map(f => f.zstdSize).reduce((a, c) => a + c, 0)
   const totalUpdateBsDiffSize = updatedFiles.map(f => f.bsDiffSize).reduce((a, c) => a + c, 0)
   const totalUpdateCourgetteSize = updatedFiles.map(f => f.courgetteDiffSize).reduce((a, c) => a + c, 0)
   const totalUpdateCourgetteZstdSize = updatedFiles.map(f => f.courgetteZstdDiffSize).reduce((a, c) => a + c, 0)
@@ -399,7 +365,7 @@ async function main(argv: string[]): Promise<number> {
   console.log(
     ` updated files size     : ${totalUpdatedFromSize} -> ${totalUpdatedToSize} (diff: ${
       totalUpdatedToSize - totalUpdatedFromSize
-    }, bsdiff: ${totalUpdateBsDiffSize}, courgette: ${totalUpdateCourgetteSize}, courgette-zstd: ${totalUpdateCourgetteZstdSize})`
+    }, zstd:${totalUpdateZstdSize}, bsdiff: ${totalUpdateBsDiffSize}, courgette: ${totalUpdateCourgetteSize}, courgette-zstd: ${totalUpdateCourgetteZstdSize})`
   )
 
   return 0
