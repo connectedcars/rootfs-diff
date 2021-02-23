@@ -47,6 +47,8 @@ interface RemovedFile {
 interface SameFile {
   to: File
   from: File
+  zstdSize: number
+  zstdTime: number | null
 }
 
 interface UpdateFile {
@@ -190,17 +192,18 @@ async function main(argv: string[]): Promise<number> {
       }
       const fromFileSha1Sum = (await sha1File(fromFile[0].fullPath)).toString('hex')
       const toFileSha1Sum = (await sha1File(toFile.fullPath)).toString('hex')
-      if (fromFileSha1Sum === toFileSha1Sum) {
-        sameFiles.push({ from: fromFile[0], to: toFile })
-      } else {
-        let zstdSize = 0
-        let zstdTime: number | null = null
-        if (useZstd) {
-          const [zstdFileStat, runTime] = await time(zstd(toFile.fullPath, `${diffCacheDir}/${toFileSha1Sum}.zstd`))
-          zstdSize = zstdFileStat.size
-          zstdTime = runTime
-        }
 
+      let zstdSize = 0
+      let zstdTime: number | null = null
+      if (useZstd) {
+        const [zstdFileStat, runTime] = await time(zstd(toFile.fullPath, `${diffCacheDir}/${toFileSha1Sum}.zstd`))
+        zstdSize = zstdFileStat.size
+        zstdTime = runTime
+      }
+
+      if (fromFileSha1Sum === toFileSha1Sum) {
+        sameFiles.push({ from: fromFile[0], to: toFile, zstdSize, zstdTime })
+      } else {
         let bsDiffSize = 0
         let bsDiffTime: number | null = null
         if (useBsdiff) {
@@ -315,6 +318,26 @@ async function main(argv: string[]): Promise<number> {
     console.log(
       `  ${updatedFile.to.path}${fromPath}: ${updatedFile.from.size} -> ${updatedFile.to.size} (size-diff:${updatedFile.sizeDiff}, zstd: ${updatedFile.zstdSize}, bsdiff:${updatedFile.bsDiffSize}, courgette: ${updatedFile.courgetteDiffSize}, courgette-zstd: ${updatedFile.courgetteZstdDiffSize}))`
     )
+  }
+
+  console.log(`Grouped files:`)
+  const groupToSeen: Record<string, boolean> = {}
+  for (const groupRegex of groups) {
+    const found: NewFile[] = []
+    for (const fileList of [newFiles, sameFiles, updatedFiles]) {
+      found.push(...fileList.filter(f => !groupToSeen[f.to.path] && f.to.path.match(groupRegex)))
+      for (const file of found) {
+        groupToSeen[file.to.path] = true
+      }
+    }
+    if (found.length > 0) {
+      const totalSize = found.map(f => f.to.size).reduce((a, c) => a + c, 0)
+      const totalZstdSize = found.map(f => f.zstdSize).reduce((a, c) => a + c, 0)
+      console.log(`  ${groupRegex}: (size: ${totalSize}, zstd: ${totalZstdSize})`)
+      for (const file of found) {
+        console.log(`    ${file.to.path}: (size: ${file.to.size}, zstd: ${file.zstdSize})`)
+      }
+    }
   }
 
   console.log(`Totals:`)
