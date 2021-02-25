@@ -9,6 +9,8 @@ const lstatAsync = util.promisify(fs.lstat)
 const renameAsync = util.promisify(fs.rename)
 const chmodAsync = util.promisify(fs.chmod)
 const readlinkAsync = util.promisify(fs.readlink)
+const writeFileAsync = util.promisify(fs.writeFile)
+const readFileAsync = util.promisify(fs.readFile)
 
 export interface File {
   fullPath: string
@@ -180,34 +182,6 @@ export async function courgette(from: string, to: string, diff: string, options?
   return diffStat
 }
 
-// TODO: Implement
-export function diffoscope(from: string, to: string, diff: string): Promise<string> {
-  const [fromDir, fromFile] = [path.dirname(from), path.basename(from)]
-  const [toDir, toFile] = [path.dirname(to), path.basename(to)]
-
-  return new Promise((resolve, reject) => {
-    execFile(
-      'docker',
-      [
-        'run',
-        `-v${fromDir}:/from`,
-        `-v${toDir}:/to`,
-        'registry.salsa.debian.org/reproducible-builds/diffoscope',
-        `/from/${fromFile}`,
-        `/to/${toFile}`
-      ],
-      (error, stdout, stderr) => {
-        if (error) {
-          console.log(stdout)
-          console.log(stderr)
-          reject(error)
-        }
-        resolve(stdout)
-      }
-    )
-  })
-}
-
 export function hasCourgette(): Promise<boolean> {
   return new Promise((resolve, reject) => {
     execFile('docker', ['inspect', '--type=image', 'docker.io/library/courgette:latest'], error => {
@@ -217,6 +191,105 @@ export function hasCourgette(): Promise<boolean> {
       resolve(true)
     })
   })
+}
+
+export async function zucchini(from: string, to: string, diff: string, options?: CourgetteOptions): Promise<fs.Stats> {
+  const mergedOptions = { overwrite: false, ...options }
+
+  const [fromDir, fromFile] = [path.dirname(from), path.basename(from)]
+  const [toDir, toFile] = [path.dirname(to), path.basename(to)]
+  const [diffDir, diffFile] = [path.dirname(diff), path.basename(diff)]
+
+  let diffStat = await lstatAsync(diff).catch(() => null)
+  if (diffStat === null || mergedOptions.overwrite) {
+    const diffTmp = `${diffFile}.tmp.${crypto.randomBytes(4).toString('hex')}`
+    await new Promise<void>((resolve, reject) => {
+      execFile(
+        'docker',
+        [
+          'run',
+          `-v${fromDir}:/from`,
+          `-v${toDir}:/to`,
+          `-v${diffDir}:/diff`,
+          'docker.io/library/deltatools',
+          'zucchini',
+          '-gen',
+          `/from/${fromFile}`,
+          `/to/${toFile}`,
+          `/diff/${diffTmp}`
+        ],
+        (error, stdout, stderr) => {
+          if (error) {
+            console.log(stdout)
+            console.log(stderr)
+            reject(error)
+          }
+          resolve()
+        }
+      )
+    })
+    await renameAsync(`${diffDir}/${diffTmp}`, diff)
+    diffStat = await lstatAsync(diff)
+  }
+
+  return diffStat
+}
+
+export function hasZucchini(): Promise<boolean> {
+  return new Promise((resolve, reject) => {
+    execFile('docker', ['inspect', '--type=image', 'docker.io/library/deltatools'], error => {
+      if (error) {
+        reject(false)
+      }
+      resolve(true)
+    })
+  })
+}
+
+export interface DiffoscopeOptions {
+  overwrite?: boolean
+  maxTextReportSize?: number
+}
+
+export async function diffoscope(from: string, to: string, diff: string, options?: DiffoscopeOptions): Promise<string> {
+  const mergedOptions = { maxTextReportSize: 8192, ...options }
+
+  const [fromDir, fromFile] = [path.dirname(from), path.basename(from)]
+  const [toDir, toFile] = [path.dirname(to), path.basename(to)]
+
+  let result: string | undefined = undefined
+
+  const diffStat = await lstatAsync(diff).catch(() => null)
+  if (diffStat === null || mergedOptions.overwrite) {
+    result = await new Promise<string>((resolve, reject) => {
+      const args = [
+        'run',
+        '--platform=linux/amd64',
+        `-v${fromDir}:/from`,
+        `-v${toDir}:/to`,
+        'registry.salsa.debian.org/reproducible-builds/diffoscope',
+        `--max-text-report-size=${mergedOptions.maxTextReportSize}`,
+        `/from/${fromFile}`,
+        `/to/${toFile}`
+      ]
+      console.log(args.join(' '))
+      execFile('docker', args, { maxBuffer: 10485760 }, (error, stdout, stderr) => {
+        if (error && error.code !== 1) {
+          console.log(stdout)
+          console.log(stderr)
+          reject(error)
+        }
+        resolve(stdout)
+      })
+    })
+    await writeFileAsync(diff, result)
+  }
+
+  if (!result) {
+    result = (await readFileAsync(diff)).toString('utf8')
+  }
+
+  return result
 }
 
 export interface ZstdOptions {

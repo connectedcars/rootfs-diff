@@ -12,17 +12,20 @@ const lstatAsync = util.promisify(fs.lstat)
 import {
   bsdiff,
   courgette,
+  diffoscope,
   File,
   hasBsdiff,
   hasCourgette,
   hasUnsquashfs,
   hasZstd,
+  hasZucchini,
   listFolder,
   sha1File,
   time,
   unsquashfs,
   unZstd,
-  zstd
+  zstd,
+  zucchini
 } from '../src/rootfs-diff'
 
 export class CommandLineError extends Error {
@@ -63,15 +66,24 @@ interface UpdateFile {
   courgetteTime: number | null
   courgetteZstdDiffSize: number
   courgetteZstdTime: number | null
+  zucchiniDiffSize: number
+  zucchiniTime: number | null
+  zucchiniZstdDiffSize: number
+  zucchiniZstdTime: number | null
+  diffoscope: string
 }
 
 const soEndingRegex = /(?:-\d+(?:\.\d+){0,3}\.so|\.so(?:\.\d+){1,3})$/
 const soBaseNameRegex = new RegExp(`^(.+)${soEndingRegex.source}`)
 const soEndingRegexStrict = new RegExp(`^${soEndingRegex.source}`)
 
-function print(msg: string, noOutput = false): void {
+function print(msg: string, noOutput = false, maxLines = 100): void {
   if (!noOutput) {
-    console.log(msg)
+    const outputLines = msg.split('\n')
+    console.log(outputLines.slice(0, maxLines).join('\n'))
+    if (outputLines.length > maxLines) {
+      console.log('...')
+    }
   }
 }
 
@@ -91,8 +103,18 @@ async function main(argv: string[]): Promise<number> {
         type: 'boolean',
         default: false
       },
+      useZucchini: {
+        describe: 'Use zucchini for deltas',
+        type: 'boolean',
+        default: false
+      },
       useZstd: {
         describe: 'Use zstd for compressing files and deltas',
+        type: 'boolean',
+        default: false
+      },
+      useDiffoscope: {
+        describe: 'Use diffoscope to show changes',
         type: 'boolean',
         default: false
       },
@@ -131,7 +153,9 @@ async function main(argv: string[]): Promise<number> {
 
   const useBsdiff = flags.useBsdiff && (await hasBsdiff())
   const useCourgette = flags.useCourgette && (await hasCourgette())
+  const useZucchini = flags.useZucchini && (await hasZucchini())
   const useZstd = flags.useZstd && (await hasZstd())
+  const useDiffoscope = await flags.useDiffoscope
   const useUnSquashFs = await hasUnsquashfs()
 
   const paths: string[] = []
@@ -163,12 +187,6 @@ async function main(argv: string[]): Promise<number> {
 
   const fromFiles = await listFolder(fromPath)
   const toFiles = await listFolder(toPath)
-
-  // from sudo
-  // to: sudo -> sudo.stuff
-
-  // from sudo -> sudo.stuff
-  // to: sudo
 
   const newFiles: NewFile[] = []
   const updatedFiles: UpdateFile[] = []
@@ -278,6 +296,30 @@ async function main(argv: string[]): Promise<number> {
           }
         }
 
+        let zucchiniDiffSize = 0
+        let zucchiniZstdDiffSize = 0
+        let zucchiniTime: number | null = null
+        let zucchiniZstdTime: number | null = null
+        if (useZucchini) {
+          const zucchiniFile = `${diffCacheDir}/${fromFileSha1Sum}-${toFileSha1Sum}.zucchini`
+          const [zucchiniFileStat, runTime] = await time(zucchini(fromFile[0].fullPath, toFile.fullPath, zucchiniFile))
+          zucchiniTime = runTime
+          zucchiniDiffSize = zucchiniFileStat!.size
+
+          if (useZstd) {
+            const zucchiniZstdFile = `${diffCacheDir}/${fromFileSha1Sum}-${toFileSha1Sum}.zucchini.zstd`
+            const [zucchiniZstdFileStat, runTime] = await time(zstd(zucchiniFile, zucchiniZstdFile))
+            zucchiniZstdTime = runTime
+            zucchiniZstdDiffSize = zucchiniZstdFileStat!.size
+          }
+        }
+
+        let diffoscopeOutput = ''
+        if (useDiffoscope) {
+          const diffoscopeFile = `${diffCacheDir}/${fromFileSha1Sum}-${toFileSha1Sum}.diffoscope`
+          diffoscopeOutput = await diffoscope(fromFile[0].fullPath, toFile.fullPath, diffoscopeFile)
+        }
+
         updatedFiles.push({
           from: fromFile[0],
           to: toFile,
@@ -289,7 +331,12 @@ async function main(argv: string[]): Promise<number> {
           courgetteDiffSize,
           courgetteTime,
           courgetteZstdDiffSize,
-          courgetteZstdTime
+          courgetteZstdTime,
+          zucchiniDiffSize,
+          zucchiniTime,
+          zucchiniZstdDiffSize,
+          zucchiniZstdTime,
+          diffoscope: diffoscopeOutput
         })
       }
     }
@@ -360,9 +407,13 @@ async function main(argv: string[]): Promise<number> {
   console.log(`Updated files:`)
   for (const updatedFile of updatedFiles.sort((a, b) => b.bsDiffSize - a.bsDiffSize)) {
     const fromPath = updatedFile.from.path !== updatedFile.to.path ? `(${updatedFile.from.path})` : ''
+    let diffStats = `size-diff:${updatedFile.sizeDiff}, zstd: ${updatedFile.zstdSize}, bsdiff:${updatedFile.bsDiffSize}`
+    diffStats += `, courgette: ${updatedFile.courgetteDiffSize}, courgette-zstd: ${updatedFile.courgetteZstdDiffSize}`
+    diffStats += `, zucchini: ${updatedFile.zucchiniDiffSize}, zucchini-zstd: ${updatedFile.zucchiniZstdDiffSize}`
     console.log(
-      `  ${updatedFile.to.path}${fromPath}: ${updatedFile.from.size} -> ${updatedFile.to.size} (size-diff:${updatedFile.sizeDiff}, zstd: ${updatedFile.zstdSize}, bsdiff:${updatedFile.bsDiffSize}, courgette: ${updatedFile.courgetteDiffSize}, courgette-zstd: ${updatedFile.courgetteZstdDiffSize}))`
+      `  ${updatedFile.to.path}${fromPath}: ${updatedFile.from.size} -> ${updatedFile.to.size} (${diffStats})`
     )
+    print(updatedFile.diffoscope.replace(/(^|\n)(.)/gm, '$1  $2'), !useDiffoscope)
   }
 
   print(`Grouped files:`, flags.hideGroups)
@@ -429,11 +480,13 @@ async function main(argv: string[]): Promise<number> {
   const totalUpdateBsDiffSize = updatedFiles.map(f => f.bsDiffSize).reduce((a, c) => a + c, 0)
   const totalUpdateCourgetteSize = updatedFiles.map(f => f.courgetteDiffSize).reduce((a, c) => a + c, 0)
   const totalUpdateCourgetteZstdSize = updatedFiles.map(f => f.courgetteZstdDiffSize).reduce((a, c) => a + c, 0)
+  const totalUpdateZucchiniSize = updatedFiles.map(f => f.zucchiniDiffSize).reduce((a, c) => a + c, 0)
+  const totalUpdateZucchiniZstdSize = updatedFiles.map(f => f.zucchiniZstdDiffSize).reduce((a, c) => a + c, 0)
 
   console.log(
     ` updated files size     : ${totalUpdatedFromSize} -> ${totalUpdatedToSize} (diff: ${
       totalUpdatedToSize - totalUpdatedFromSize
-    }, zstd:${totalUpdateZstdSize}, bsdiff: ${totalUpdateBsDiffSize}, courgette: ${totalUpdateCourgetteSize}, courgette-zstd: ${totalUpdateCourgetteZstdSize})`
+    }, zstd:${totalUpdateZstdSize}, bsdiff: ${totalUpdateBsDiffSize}, courgette: ${totalUpdateCourgetteSize}, courgette-zstd: ${totalUpdateCourgetteZstdSize}, zucchini: ${totalUpdateZucchiniSize}, zucchini-zstd: ${totalUpdateZucchiniZstdSize})`
   )
 
   return 0
