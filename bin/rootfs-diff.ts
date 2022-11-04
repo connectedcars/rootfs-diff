@@ -219,8 +219,8 @@ async function main(argv: string[]): Promise<number> {
 
   // Do image compression
   const [fromImage, toImage] = images
-  const fromImageSha1Sum = await sha1File(fromImage)
-  const toImageSha1Sum = await sha1File(toImage)
+  const fromImageSha1Sum = (await sha1File(fromImage)).toString('hex')
+  const toImageSha1Sum = (await sha1File(toImage)).toString('hex')
   const fromImageStat = await lstatAsync(fromImage)
   const toImageStat = await lstatAsync(toImage)
 
