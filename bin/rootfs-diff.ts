@@ -227,7 +227,7 @@ async function main(argv: string[]): Promise<number> {
   let imageBsDiffSize = 0
   let imageBsDiffTime: number | null = null
   if (useBsdiff) {
-    const bsDiffFile = `${diffCacheDir}/${fromImageSha1Sum}-${toImageSha1Sum}.squashfs.bsdiff`
+    const bsDiffFile = `${diffCacheDir}/${fromImageSha1Sum}-${toImageSha1Sum}.image.bsdiff`
     const [bsDiffFileStat, runTime] = await time(bsdiff(fromImage, toImage, bsDiffFile))
     imageBsDiffSize = bsDiffFileStat.size
     imageBsDiffTime = runTime
@@ -238,13 +238,13 @@ async function main(argv: string[]): Promise<number> {
   let imageVcDiffZstdDiffSize = 0
   let imageVcDiffZstdTime: number | null = null
   if (useVcdiff) {
-    const vcDiffFile = `${diffCacheDir}/${fromImageSha1Sum}-${toImageSha1Sum}.squashfs.vcdiff`
+    const vcDiffFile = `${diffCacheDir}/${fromImageSha1Sum}-${toImageSha1Sum}.image.vcdiff`
     const [vsDiffFileStat, runTime] = await time(vcdiff(fromImage, toImage, vcDiffFile))
     imageVcDiffSize = vsDiffFileStat.size
     imageVcDiffTime = runTime
 
     if (useZstd) {
-      const vcDiffZstdFile = `${diffCacheDir}/${fromImageSha1Sum}-${toImageSha1Sum}.vcdiff.zstd`
+      const vcDiffZstdFile = `${diffCacheDir}/${fromImageSha1Sum}-${toImageSha1Sum}.image.vcdiff.zstd`
       const [vcDiffZstdFileStat, runTime] = await time(zstd(vcDiffFile, vcDiffZstdFile))
       imageVcDiffZstdDiffSize = vcDiffZstdFileStat!.size
       imageVcDiffZstdTime = runTime
