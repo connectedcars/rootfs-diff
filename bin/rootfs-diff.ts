@@ -9,31 +9,30 @@ import yargs from 'yargs'
 
 const mkdirAsync = util.promisify(fs.mkdir)
 const lstatAsync = util.promisify(fs.lstat)
+const existsAsync = util.promisify(fs.exists)
+const writeFileAsync = util.promisify(fs.writeFile)
+const rmAsync = util.promisify(fs.rm)
 
-import {
-  bsdiff,
-  courgette,
-  diffoscope,
-  File,
-  hasBsdiff,
-  hasCourgette,
-  hasUnsquashfs,
-  hasZstd,
-  hasZucchini,
-  listFolder,
-  sha1File,
-  time,
-  unsquashfs,
-  unZstd,
-  zstd,
-  zucchini
-} from '../src/rootfs-diff'
+import { bsdiff, hasBsdiff } from '../src/bsdiff'
+import { courgette, hasCourgette } from '../src/courgette'
+import { diffoscope } from '../src/diffoscope'
+import { File, listFolder, sha1File, time } from '../src/rootfs-diff'
+import { hasUnsquashfs, unsquashfs } from '../src/unsquashfs'
+import { hasVciff, vcdiff } from '../src/vcdiff'
+import { hasZstd, unZstd, zstd } from '../src/zstd'
+import { hasZucchini, zucchini } from '../src/zucchini'
 
 export class CommandLineError extends Error {
   public constructor(message: string) {
     super(message)
     this.name = this.constructor.name
   }
+}
+
+enum ImageTypes {
+  SQUASH_FS = 'squashfs',
+  CPIO = 'cpio',
+  UNKNOWN = 'unknown'
 }
 
 interface NewFile {
@@ -129,7 +128,7 @@ async function main(argv: string[]): Promise<number> {
       group: {
         describe: 'Group files by regex(s)',
         type: 'string',
-        default: [] as string[], // Typings are broken, this removes undefined from the type
+        default: [],
         coerce: (s: string | string[]) => (Array.isArray(s) ? s : [s])
       },
       hideGroups: {
@@ -146,9 +145,7 @@ async function main(argv: string[]): Promise<number> {
     .strict()
     .parse(argv)
 
-  const args = flags.images.map(c => c.toString())
-
-  if (args.length !== 2) {
+  if (flags.images.length !== 2) {
     yargs.showHelp()
     return 255
   }
@@ -160,6 +157,7 @@ async function main(argv: string[]): Promise<number> {
   console.log(`Using cache folder: ${diffCacheDir}`)
 
   const useBsdiff = flags.useBsdiff && (await hasBsdiff())
+  const useVcdiff = flags.useBsdiff && (await hasVciff())
   const useCourgette = flags.useCourgette && (await hasCourgette())
   const useZucchini = flags.useZucchini && (await hasZucchini())
   const useZstd = flags.useZstd && (await hasZstd())
@@ -167,40 +165,101 @@ async function main(argv: string[]): Promise<number> {
   const useUnSquashFs = await hasUnsquashfs()
 
   const paths: string[] = []
-  for (const rootfsPath of args) {
+  const images: string[] = []
+  for (const rootfsPath of flags.images) {
     const rootfsPathStat = await lstatAsync(rootfsPath)
 
     if (rootfsPathStat.isFile()) {
-      if (!useUnSquashFs) {
-        throw new CommandLineError(`unsquashfs not installed`)
-      }
-      let squashfsFile = rootfsPath
-      const sha1Sum = await sha1File(rootfsPath)
-      if (rootfsPath.match(/\.zst[d]?$/)) {
-        squashfsFile = `${diffCacheDir}/${sha1Sum.toString('hex')}.squashfs`
-        await unZstd(rootfsPath, squashfsFile)
+      let imageType: ImageTypes = ImageTypes.UNKNOWN
+      if (rootfsPath.match(/\.squashfs/)) {
+        if (!useUnSquashFs) {
+          throw new CommandLineError(`unsquashfs not installed`)
+        }
+        imageType = ImageTypes.SQUASH_FS
       }
 
-      // TODO: Handle that MacOS wipes the files but not the folder in tmp
-      // https://superuser.com/questions/187071/in-macos-how-often-is-tmp-deleted
-      const rootfsCachePath = `${diffCacheDir}/${sha1Sum.toString('hex')}.rootfs`
-      await unsquashfs(squashfsFile, rootfsCachePath, { fixPermissions: true })
-      paths.push(rootfsCachePath)
+      // Checksum image file
+      const sha1Sum = await sha1File(rootfsPath)
+
+      // Decompress image
+      const compressionMatch = rootfsPath.match(/([^.]+)\.zst[d]?$/)
+      let imageFile = rootfsPath
+      if (compressionMatch) {
+        imageFile = `${diffCacheDir}/${sha1Sum.toString('hex')}.${imageType}`
+        await unZstd(rootfsPath, imageFile)
+      }
+
+      // Unpack squashfs rootfs
+      if (imageType === ImageTypes.SQUASH_FS) {
+        const rootfsCachePath = `${diffCacheDir}/${sha1Sum.toString('hex')}.rootfs`
+        if (os.platform() === 'darwin') {
+          // Handle that MacOS wipes the files but not the folders in tmp
+          // https://superuser.com/questions/187071/in-macos-how-often-is-tmp-deleted
+          if (!(await existsAsync(`${rootfsCachePath}.cache`))) {
+            await rmAsync(`${rootfsCachePath}`, { recursive: true, force: true })
+            await writeFileAsync(`${rootfsCachePath}.cache`, '')
+          }
+        }
+        await unsquashfs(imageFile, rootfsCachePath, { fixPermissions: true })
+        paths.push(rootfsCachePath)
+        images.push(imageFile)
+      } else {
+        throw new CommandLineError(`unknown image format '${imageFile}'`)
+      }
     } else {
       paths.push(rootfsPath)
     }
   }
-
-  const [fromPath, toPath] = paths
-
-  const fromFiles = await listFolder(fromPath)
-  const toFiles = await listFolder(toPath)
 
   const newFiles: NewFile[] = []
   const updatedFiles: UpdateFile[] = []
   const sameFiles: SameFile[] = []
   const toAliases: Record<string, string[]> = {}
   const fromAliases: Record<string, string[]> = {}
+
+  // Do image compression
+  const [fromImage, toImage] = images
+  const fromImageSha1Sum = await sha1File(fromImage)
+  const toImageSha1Sum = await sha1File(toImage)
+  const fromImageStat = await lstatAsync(fromImage)
+  const toImageStat = await lstatAsync(toImage)
+
+  let imageBsDiffSize = 0
+  let imageBsDiffTime: number | null = null
+  if (useBsdiff) {
+    const bsDiffFile = `${diffCacheDir}/${fromImageSha1Sum}-${toImageSha1Sum}.squashfs.bsdiff`
+    const [bsDiffFileStat, runTime] = await time(bsdiff(fromImage, toImage, bsDiffFile))
+    imageBsDiffSize = bsDiffFileStat.size
+    imageBsDiffTime = runTime
+  }
+
+  let imageVcDiffSize = 0
+  let imageVcDiffTime: number | null = null
+  let imageVcDiffZstdDiffSize = 0
+  let imageVcDiffZstdTime: number | null = null
+  if (useVcdiff) {
+    const vcDiffFile = `${diffCacheDir}/${fromImageSha1Sum}-${toImageSha1Sum}.squashfs.vcdiff`
+    const [vsDiffFileStat, runTime] = await time(vcdiff(fromImage, toImage, vcDiffFile))
+    imageVcDiffSize = vsDiffFileStat.size
+    imageVcDiffTime = runTime
+
+    if (useZstd) {
+      const vcDiffZstdFile = `${diffCacheDir}/${fromImageSha1Sum}-${toImageSha1Sum}.vcdiff.zstd`
+      const [vcDiffZstdFileStat, runTime] = await time(zstd(vcDiffFile, vcDiffZstdFile))
+      imageVcDiffZstdDiffSize = vcDiffZstdFileStat!.size
+      imageVcDiffZstdTime = runTime
+    }
+  }
+
+  console.log(
+    `Image size ${fromImageStat.size} -> ${toImageStat.size} (size-diff: ${
+      toImageStat.size - fromImageStat.size
+    }, bsdiff: ${imageBsDiffSize}, vcdiff: ${imageVcDiffSize}, vcdiff-zstd: ${imageVcDiffZstdDiffSize})`
+  )
+
+  const [fromPath, toPath] = paths
+  const fromFiles = await listFolder(fromPath)
+  const toFiles = await listFolder(toPath)
 
   // Build alias lookup table for all symlinks
   for (const toFile of toFiles.filter(f => f.isSymbolicLink)) {
@@ -475,8 +534,8 @@ async function main(argv: string[]): Promise<number> {
     .filter(f => groupNewSeen[f.to.path])
     .map(f => f.zstdSize)
     .reduce((a, c) => a + c, 0)
-  const singleRemovedFilesSize = singleNewFiles.map(f => f.to.size).reduce((a, c) => a + c, 0)
-  const singleRemovedFilesZstdSize = singleNewFiles.map(f => f.zstdSize).reduce((a, c) => a + c, 0)
+  const singleRemovedFilesSize = removedFiles.map(f => f.from.size).reduce((a, c) => a + c, 0)
+  const singleRemovedFilesZstdSize = removedFiles.map(f => f.zstdSize).reduce((a, c) => a + c, 0)
 
   console.log(` removed files size     : ${totalRemovedFilesSize} (zstd: ${totalRemovedFilesZstdSize})`)
   console.log(`   grouped : ${totalRemovedGroupSize} (zstd: ${totalRemovedGroupZstdSize})`)
@@ -492,9 +551,17 @@ async function main(argv: string[]): Promise<number> {
   const totalUpdateZucchiniZstdSize = updatedFiles.map(f => f.zucchiniZstdDiffSize).reduce((a, c) => a + c, 0)
 
   console.log(
-    ` updated files size     : ${totalUpdatedFromSize} -> ${totalUpdatedToSize} (diff: ${
+    ` updated files size     : ${totalUpdatedFromSize} -> ${totalUpdatedToSize} (size-diff: ${
       totalUpdatedToSize - totalUpdatedFromSize
     }, zstd:${totalUpdateZstdSize}, bsdiff: ${totalUpdateBsDiffSize}, courgette: ${totalUpdateCourgetteSize}, courgette-zstd: ${totalUpdateCourgetteZstdSize}, zucchini: ${totalUpdateZucchiniSize}, zucchini-zstd: ${totalUpdateZucchiniZstdSize})`
+  )
+
+  const totalDiffSize = totalUpdatedToSize + totalNewFilesSize
+  const totalDiffZstdSize = totalUpdateZstdSize + totalNewFilesZstdSize
+  const totalDiffBsDiffSize = totalUpdateBsDiffSize + totalNewFilesZstdSize
+
+  console.log(
+    ` total diff size        : ${totalDiffSize} (zstd:${totalDiffZstdSize}, bsdiff+new-zstd: ${totalDiffBsDiffSize}))`
   )
 
   return 0
