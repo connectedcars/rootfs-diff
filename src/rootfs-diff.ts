@@ -1,3 +1,4 @@
+/* eslint-disable no-console */
 import { execFile } from 'child_process'
 import crypto from 'crypto'
 import fs from 'fs'

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* eslint-disable no-console */
 
 import fs from 'fs'
 import os from 'os'
@@ -88,11 +89,18 @@ function print(msg: string, noOutput = false, maxLines = 100): void {
 }
 
 async function main(argv: string[]): Promise<number> {
-  const { _: inputArgs, ...flags } = yargs
+  const flags = await yargs
     .scriptName('rootfs-diff')
-    .usage('$0 from to')
+    .command('$0 [images..]', 'diff two or more images')
+    .usage('$0 <from> <to>')
     .wrap(yargs.terminalWidth())
     .options({
+      images: {
+        describe: 'Images',
+        type: 'string',
+        default: [],
+        coerce: (s: string | string[]) => (Array.isArray(s) ? s : [s])
+      },
       useBsdiff: {
         describe: 'Use bsdiff for deltas',
         type: 'boolean',
@@ -138,7 +146,7 @@ async function main(argv: string[]): Promise<number> {
     .strict()
     .parse(argv)
 
-  const args = inputArgs.map(c => c.toString())
+  const args = flags.images.map(c => c.toString())
 
   if (args.length !== 2) {
     yargs.showHelp()
