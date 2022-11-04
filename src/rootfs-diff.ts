@@ -383,7 +383,7 @@ export async function unsquashfs(from: string, to: string, options?: UnsquashfsO
       const files = await listFolder(toTmp)
       // Fix permissions if some of the files are missing read permission, fx. sudo
       for (const file of files) {
-        if (!file.isFile && (file.mode & 0o400) === 0) {
+        if (file.isFile && (file.mode & 0o400) === 0) {
           await chmodAsync(file.fullPath, file.mode | 0o400)
         }
       }
