@@ -9,7 +9,6 @@ import yargs from 'yargs'
 
 const mkdirAsync = util.promisify(fs.mkdir)
 const lstatAsync = util.promisify(fs.lstat)
-const existsAsync = util.promisify(fs.exists)
 const writeFileAsync = util.promisify(fs.writeFile)
 const rmAsync = util.promisify(fs.rm)
 const fsUtimesAsync = util.promisify(fs.utimes)
@@ -22,7 +21,7 @@ import { unGzip } from '../src/gzip'
 import { FileStat, listFolder, sha1File, time } from '../src/rootfs-diff'
 import { hasUnsquashfs, unsquashfs } from '../src/squashfs'
 import { hasVciff, vcdiff } from '../src/vcdiff'
-import { hasZstd, unZstd, zstd } from '../src/zstd'
+import { hasZstd, unZstd, zstd, zstdDiff } from '../src/zstd'
 import { hasZucchini, zucchini } from '../src/zucchini'
 
 export class CommandLineError extends Error {
@@ -305,10 +304,20 @@ async function main(argv: string[]): Promise<number> {
     }
   }
 
+  let imageZstdDiffSize = 0
+  let imageZstdDiffTime: number | null = null
+
+  if (useZstd) {
+    const zstdDiffFile = `${diffCacheDir}/${fromImageSha1Sum}-${toImageSha1Sum}.image.zstddiff`
+    const [zstdDiffFileStat, runTime] = await time(zstdDiff(fromImage, toImage, zstdDiffFile, { level: 19 }))
+    imageZstdDiffSize = zstdDiffFileStat.size
+    imageZstdDiffTime = runTime
+  }
+
   console.log(
     `Image size ${fromImageStat.size} -> ${toImageStat.size} (size-diff: ${
       toImageStat.size - fromImageStat.size
-    }, bsdiff: ${imageBsDiffSize}, vcdiff: ${imageVcDiffSize}, vcdiff-zstd: ${imageVcDiffZstdDiffSize})`
+    }, bsdiff: ${imageBsDiffSize}, vcdiff: ${imageVcDiffSize}, vcdiff-zstd: ${imageVcDiffZstdDiffSize}, zstd-diff: ${imageZstdDiffSize})`
   )
 
   // Do file comparison
@@ -426,6 +435,16 @@ async function main(argv: string[]): Promise<number> {
               time: runTime
             })
           }
+        }
+
+        if (useZstd) {
+          const zstdDiffFile = `${diffCacheDir}/${fromFileSha1Sum}-${toFileSha1Sum}.zstddiff`
+          const [zstdDiffFileStat, runTime] = await time(zstdDiff(fromFile[0].fullPath, toFile.fullPath, zstdDiffFile))
+          compressorResult.push({
+            type: CompressorType.ZSTD_DIFF,
+            size: zstdDiffFileStat.size,
+            time: runTime
+          })
         }
 
         if (useCourgette) {
@@ -613,7 +632,22 @@ async function main(argv: string[]): Promise<number> {
       const totalZstdSize = found
         .map(f => f.compressorResult.find(c => c.type === CompressorType.ZSTD)?.size ?? 0)
         .reduce((a, c) => a + c, 0)
-      print(`  ${groupRegex}: (size: ${totalSize}, zstd: ${totalZstdSize})`, flags.hideGroups)
+
+      let totalDiffStats = ''
+      for (const compressorType of Object.values(CompressorType).filter((v): v is number => !isNaN(Number(v)))) {
+        const totalCompressedSize = found
+          .map(f => f.compressorResult.find(c => c.type === compressorType)?.size ?? 0)
+          .reduce((a, c) => a + c, 0)
+        const compressorName = CompressorType[compressorType].toLocaleLowerCase()
+
+        if (totalCompressedSize === 0) {
+          continue
+        }
+
+        totalDiffStats += `, ${compressorName}: ${totalCompressedSize}`
+      }
+
+      print(`  ${groupRegex}: (size: ${totalSize}${totalDiffStats})`, flags.hideGroups)
       for (const file of found) {
         let diffStats = file.type === FileChangeType.UPDATED ? `, size-diff:${file.sizeDiff}` : ''
         for (const compressorType of Object.values(CompressorType).filter((v): v is number => !isNaN(Number(v)))) {
@@ -626,7 +660,7 @@ async function main(argv: string[]): Promise<number> {
 
           diffStats += `, ${compressorName}: ${compressedSize}`
         }
-        print(`    ${file.to.path}: (size: ${file.to.size}, ${diffStats})`, flags.hideGroups)
+        print(`    ${file.to.path}: (size: ${file.to.size}${diffStats})`, flags.hideGroups)
       }
     }
   }

@@ -45,6 +45,29 @@ export async function zstd(from: string, to: string, options?: ZstdOptions): Pro
   return toStat
 }
 
+export async function zstdDiff(from: string, to: string, diff: string, options?: ZstdOptions): Promise<fs.Stats> {
+  const mergedOptions = { overwrite: false, ...options }
+
+  let diffStat = await lstatAsync(diff).catch(() => null)
+  if (diffStat === null || mergedOptions.overwrite) {
+    const diffTmp = `${diff}.tmp.${crypto.randomBytes(4).toString('hex')}`
+    await new Promise<void>((resolve, reject) => {
+      execFile('zstd', [`--patch-from=${from}`, to, '-o', diffTmp], (error, stdout, stderr) => {
+        if (error) {
+          console.log(stdout)
+          console.log(stderr)
+          reject(error)
+        }
+        resolve()
+      })
+    })
+    await renameAsync(diffTmp, diff)
+    diffStat = await lstatAsync(diff)
+  }
+
+  return diffStat
+}
+
 export interface UnZstdOptions {
   overwrite?: boolean
 }
