@@ -15,7 +15,9 @@ const rmAsync = util.promisify(fs.rm)
 
 import { bsdiff, hasBsdiff } from '../src/bsdiff'
 import { courgette, hasCourgette } from '../src/courgette'
+import { hasCpio, unCpio } from '../src/cpio'
 import { diffoscope } from '../src/diffoscope'
+import { unGzip } from '../src/gzip'
 import { File, listFolder, sha1File, time } from '../src/rootfs-diff'
 import { hasUnsquashfs, unsquashfs } from '../src/squashfs'
 import { hasVciff, vcdiff } from '../src/vcdiff'
@@ -163,6 +165,7 @@ async function main(argv: string[]): Promise<number> {
   const useZstd = flags.useZstd && (await hasZstd())
   const useDiffoscope = await flags.useDiffoscope
   const useUnSquashFs = await hasUnsquashfs()
+  const useCpio = await hasCpio()
 
   const paths: string[] = []
   const images: string[] = []
@@ -170,42 +173,67 @@ async function main(argv: string[]): Promise<number> {
     const rootfsPathStat = await lstatAsync(rootfsPath)
 
     if (rootfsPathStat.isFile()) {
+      // Detect image type
       let imageType: ImageTypes = ImageTypes.UNKNOWN
       if (rootfsPath.match(/\.squashfs/)) {
         if (!useUnSquashFs) {
           throw new CommandLineError(`unsquashfs not installed`)
         }
         imageType = ImageTypes.SQUASH_FS
+      } else if (rootfsPath.match(/\.cpio/)) {
+        if (!useCpio) {
+          throw new CommandLineError(`cpio not installed`)
+        }
+        imageType = ImageTypes.CPIO
       }
 
       // Checksum image file
       const sha1Sum = await sha1File(rootfsPath)
 
       // Decompress image
-      const compressionMatch = rootfsPath.match(/([^.]+)\.zst[d]?$/)
       let imageFile = rootfsPath
+      const compressionMatch = rootfsPath.match(/[^.]+\.(zst[d]|gz)?$/)
       if (compressionMatch) {
         imageFile = `${diffCacheDir}/${sha1Sum.toString('hex')}.${imageType}`
-        await unZstd(rootfsPath, imageFile)
-      }
-
-      // Unpack squashfs rootfs
-      if (imageType === ImageTypes.SQUASH_FS) {
-        const rootfsCachePath = `${diffCacheDir}/${sha1Sum.toString('hex')}.rootfs`
-        if (os.platform() === 'darwin') {
-          // Handle that MacOS wipes the files but not the folders in tmp
-          // https://superuser.com/questions/187071/in-macos-how-often-is-tmp-deleted
-          if (!(await existsAsync(`${rootfsCachePath}.cache`))) {
-            await rmAsync(`${rootfsCachePath}`, { recursive: true, force: true })
-            await writeFileAsync(`${rootfsCachePath}.cache`, '')
+        switch (compressionMatch[1]) {
+          case 'zst':
+          case 'zstd': {
+            await unZstd(rootfsPath, imageFile)
+            break
+          }
+          case 'gz': {
+            await unGzip(rootfsPath, imageFile)
+            break
+          }
+          default: {
+            throw Error(`Unknown compression match: ${compressionMatch[1]}`)
           }
         }
+      }
+
+      const rootfsCachePath = `${diffCacheDir}/${sha1Sum.toString('hex')}.rootfs`
+
+      // Handle that MacOS wipes the files but not the folders in tmp
+      if (os.platform() === 'darwin') {
+        // https://superuser.com/questions/187071/in-macos-how-often-is-tmp-deleted
+        if (!(await existsAsync(`${rootfsCachePath}.cache`))) {
+          await rmAsync(`${rootfsCachePath}`, { recursive: true, force: true })
+          await writeFileAsync(`${rootfsCachePath}.cache`, '')
+        }
+      }
+
+      // Extract image file to folder
+      if (imageType === ImageTypes.SQUASH_FS) {
         await unsquashfs(imageFile, rootfsCachePath, { fixPermissions: true })
-        paths.push(rootfsCachePath)
-        images.push(imageFile)
+      } else if (imageType === ImageTypes.CPIO) {
+        await unCpio(imageFile, rootfsCachePath, { fixPermissions: true })
       } else {
         throw new CommandLineError(`unknown image format '${imageFile}'`)
       }
+
+      // Add extracted folder and image files
+      paths.push(rootfsCachePath)
+      images.push(imageFile)
     } else {
       paths.push(rootfsPath)
     }

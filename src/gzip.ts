@@ -56,7 +56,7 @@ export async function unGzip(from: string, to: string, options?: UnGzipOptions):
   if (toStat === null || mergedOptions.overwrite) {
     const toTmp = `${to}.tmp.${crypto.randomBytes(4).toString('hex')}`
     await new Promise<void>((resolve, reject) => {
-      execFile('bash', ['-c', `gzip -d '${from}' > '${toTmp}'`], (error, stdout, stderr) => {
+      execFile('bash', ['-c', `gzip -c -d '${from}' > '${toTmp}'`], (error, stdout, stderr) => {
         if (error) {
           console.log(stdout)
           console.log(stderr)
