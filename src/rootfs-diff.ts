@@ -8,7 +8,7 @@ const readdirAsync = util.promisify(fs.readdir)
 const lstatAsync = util.promisify(fs.lstat)
 const readlinkAsync = util.promisify(fs.readlink)
 
-export interface File {
+export interface FileStat {
   fullPath: string
   path: string
   dev: number
@@ -34,33 +34,44 @@ export interface File {
   symlinkPath: string
 }
 
-export async function listFolder(rootPath: string): Promise<File[]> {
-  const results: File[] = []
+export async function listFolder(rootPath: string, includeFolders = false): Promise<FileStat[]> {
+  const results: FileStat[] = []
   const dirs: string[] = [rootPath]
   while (dirs.length > 0) {
     const dir = dirs.shift() as string
     for (const file of await readdirAsync(dir)) {
       const filePath = path.resolve(dir, file)
       const fileStat = await lstatAsync(filePath).catch(() => null)
+
       if (fileStat === null) {
         // Skip symlinks pointing to nothing
         continue
       }
+
+      const relativeFilePath = path.relative(rootPath, filePath)
+      let symlinkPath = ''
+      if (fileStat.isSymbolicLink()) {
+        const rawLinkPath = await readlinkAsync(filePath)
+        if (rawLinkPath.match(/^\//)) {
+          symlinkPath = rawLinkPath.replace(/^\//, '')
+        } else {
+          symlinkPath = path.relative(rootPath, path.resolve(dir, rawLinkPath))
+        }
+      }
+
       if (fileStat.isDirectory()) {
         dirs.push(filePath)
-      } else if (fileStat.isFile() || fileStat.isSymbolicLink()) {
-        const relativeFilePath = path.relative(rootPath, filePath)
-
-        let symlinkPath = ''
-        if (fileStat.isSymbolicLink()) {
-          const rawLinkPath = await readlinkAsync(filePath)
-          if (rawLinkPath.match(/^\//)) {
-            symlinkPath = rawLinkPath.replace(/^\//, '')
-          } else {
-            symlinkPath = path.relative(rootPath, path.resolve(dir, rawLinkPath))
-          }
+        if (includeFolders) {
+          results.push({
+            ...fileStat,
+            fullPath: filePath,
+            path: relativeFilePath,
+            isFile: fileStat.isFile(),
+            isSymbolicLink: fileStat.isSymbolicLink(),
+            symlinkPath
+          })
         }
-
+      } else if (fileStat.isFile() || fileStat.isSymbolicLink()) {
         results.push({
           ...fileStat,
           fullPath: filePath,
