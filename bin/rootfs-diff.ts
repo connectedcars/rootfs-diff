@@ -12,6 +12,7 @@ const lstatAsync = util.promisify(fs.lstat)
 const writeFileAsync = util.promisify(fs.writeFile)
 const rmAsync = util.promisify(fs.rm)
 const fsUtimesAsync = util.promisify(fs.utimes)
+const readlinkAsync = util.promisify(fs.readlink)
 
 import { bsdiff, hasBsdiff } from '../src/bsdiff'
 import { courgette, hasCourgette } from '../src/courgette'
@@ -199,7 +200,13 @@ async function main(argv: string[]): Promise<number> {
   const paths: string[] = []
   const images: string[] = []
   for (const rootfsPath of flags.images) {
-    const rootfsPathStat = await lstatAsync(rootfsPath)
+    let rootfsPathStat = await lstatAsync(rootfsPath)
+
+    if (rootfsPathStat.isSymbolicLink()) {
+      // Handle path being a symlink
+      const resolvedRootfsPath = path.resolve(path.dirname(rootfsPath), await readlinkAsync(rootfsPath))
+      rootfsPathStat = await lstatAsync(resolvedRootfsPath)
+    }
 
     if (rootfsPathStat.isFile()) {
       // Detect image type
