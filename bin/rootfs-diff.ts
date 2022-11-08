@@ -19,6 +19,7 @@ import { courgette, hasCourgette } from '../src/courgette'
 import { hasCpio, unCpio } from '../src/cpio'
 import { diffoscope } from '../src/diffoscope'
 import { unGzip } from '../src/gzip'
+import { hasMiniBsdiff, miniBsdiff } from '../src/minibsdiff'
 import { FileStat, listFolder, sha1File, time } from '../src/rootfs-diff'
 import { hasUnsquashfs, unsquashfs } from '../src/squashfs'
 import { hasVciff, vcdiff } from '../src/vcdiff'
@@ -43,6 +44,8 @@ enum CompressorType {
   ZSTD_DIFF,
   GZIP,
   BS_DIFF,
+  MINI_BS_DIFF,
+  MINI_BS_DIFF_ZSTD,
   VC_DIFF,
   VC_DIFF_ZSTD,
   COURGETTE,
@@ -126,6 +129,11 @@ async function main(argv: string[]): Promise<number> {
         type: 'boolean',
         default: false
       },
+      useMiniBsdiff: {
+        describe: 'Use minibsdiff for deltas',
+        type: 'boolean',
+        default: false
+      },
       useVcdiff: {
         describe: 'Use vcdiff for deltas',
         type: 'boolean',
@@ -141,7 +149,7 @@ async function main(argv: string[]): Promise<number> {
         type: 'boolean',
         default: false
       },
-      useZstdDelta: {
+      useZstdDiff: {
         describe: 'Use zstd for deltas',
         type: 'boolean',
         default: false
@@ -188,11 +196,12 @@ async function main(argv: string[]): Promise<number> {
   console.log(`Using cache folder: ${diffCacheDir}`)
 
   const useBsdiff = flags.useBsdiff && (await hasBsdiff())
+  const useMiniBsdiff = flags.useMiniBsdiff && (await hasMiniBsdiff())
   const useVcdiff = flags.useVcdiff && (await hasVciff())
   const useCourgette = flags.useCourgette && (await hasCourgette())
   const useZucchini = flags.useZucchini && (await hasZucchini())
   const useZstd = flags.useZstd && (await hasZstd())
-  const useZstdDelta = flags.useZstdDelta && (await hasZstd())
+  const useZstdDiff = flags.useZstdDiff && (await hasZstd())
   const useDiffoscope = await flags.useDiffoscope
   const useUnSquashFs = await hasUnsquashfs()
   const useCpio = await hasCpio()
@@ -288,55 +297,75 @@ async function main(argv: string[]): Promise<number> {
     }
   }
 
-  // Do image compression
-  const [fromImage, toImage] = images
-  const fromImageSha1Sum = (await sha1File(fromImage)).toString('hex')
-  const toImageSha1Sum = (await sha1File(toImage)).toString('hex')
-  const fromImageStat = await lstatAsync(fromImage)
-  const toImageStat = await lstatAsync(toImage)
+  // Do image compression tests
+  if (images.length === 2) {
+    const [fromImage, toImage] = images
+    const fromImageSha1Sum = (await sha1File(fromImage)).toString('hex')
+    const toImageSha1Sum = (await sha1File(toImage)).toString('hex')
+    const fromImageStat = await lstatAsync(fromImage)
+    const toImageStat = await lstatAsync(toImage)
 
-  let imageBsDiffSize = 0
-  let imageBsDiffTime: number | null = null
-  if (useBsdiff) {
-    const bsDiffFile = `${diffCacheDir}/${fromImageSha1Sum}-${toImageSha1Sum}.image.bsdiff`
-    const [bsDiffFileStat, runTime] = await time(bsdiff(fromImage, toImage, bsDiffFile))
-    imageBsDiffSize = bsDiffFileStat.size
-    imageBsDiffTime = runTime
-  }
-
-  let imageVcDiffSize = 0
-  let imageVcDiffTime: number | null = null
-  let imageVcDiffZstdDiffSize = 0
-  let imageVcDiffZstdTime: number | null = null
-  if (useVcdiff) {
-    const vcDiffFile = `${diffCacheDir}/${fromImageSha1Sum}-${toImageSha1Sum}.image.vcdiff`
-    const [vsDiffFileStat, runTime] = await time(vcdiff(fromImage, toImage, vcDiffFile))
-    imageVcDiffSize = vsDiffFileStat.size
-    imageVcDiffTime = runTime
-
-    if (useZstd) {
-      const vcDiffZstdFile = `${diffCacheDir}/${fromImageSha1Sum}-${toImageSha1Sum}.image.vcdiff.zstd`
-      const [vcDiffZstdFileStat, runTime] = await time(zstd(vcDiffFile, vcDiffZstdFile))
-      imageVcDiffZstdDiffSize = vcDiffZstdFileStat!.size
-      imageVcDiffZstdTime = runTime
+    let imageBsDiffSize = 0
+    let imageBsDiffTime: number | null = null
+    if (useBsdiff) {
+      const diffFile = `${diffCacheDir}/${fromImageSha1Sum}-${toImageSha1Sum}.image.bsdiff`
+      const [diffFileStat, runTime] = await time(bsdiff(fromImage, toImage, diffFile))
+      imageBsDiffSize = diffFileStat.size
+      imageBsDiffTime = runTime
     }
+
+    let imageMiniBsdiffSize = 0
+    let imageMiniBsdiffTime: number | null = null
+    let imageMiniBsdiffZstdDiffSize = 0
+    let imageMiniBsdiffZstdTime: number | null = null
+    if (useMiniBsdiff) {
+      const diffFile = `${diffCacheDir}/${fromImageSha1Sum}-${toImageSha1Sum}.image.minibsdiff`
+      const [diffFileStat, runTime] = await time(miniBsdiff(fromImage, toImage, diffFile))
+      imageMiniBsdiffSize = diffFileStat.size
+      imageMiniBsdiffTime = runTime
+
+      if (useZstd) {
+        const diffZstdFile = `${diffCacheDir}/${fromImageSha1Sum}-${toImageSha1Sum}.image.minibsdiff.zstd`
+        const [vcDiffZstdFileStat, runTime] = await time(zstd(diffFile, diffZstdFile))
+        imageMiniBsdiffZstdDiffSize = vcDiffZstdFileStat.size
+        imageMiniBsdiffZstdTime = runTime
+      }
+    }
+
+    let imageVcDiffSize = 0
+    let imageVcDiffTime: number | null = null
+    let imageVcDiffZstdDiffSize = 0
+    let imageVcDiffZstdTime: number | null = null
+    if (useVcdiff) {
+      const diffFile = `${diffCacheDir}/${fromImageSha1Sum}-${toImageSha1Sum}.image.vcdiff`
+      const [diffFileStat, runTime] = await time(vcdiff(fromImage, toImage, diffFile))
+      imageVcDiffSize = diffFileStat.size
+      imageVcDiffTime = runTime
+
+      if (useZstd) {
+        const diffZstdFile = `${diffCacheDir}/${fromImageSha1Sum}-${toImageSha1Sum}.image.vcdiff.zstd`
+        const [diffZstdFileStat, runTime] = await time(zstd(diffFile, diffZstdFile))
+        imageVcDiffZstdDiffSize = diffZstdFileStat!.size
+        imageVcDiffZstdTime = runTime
+      }
+    }
+
+    let imageZstdDiffSize = 0
+    let imageZstdDiffTime: number | null = null
+
+    if (useZstdDiff) {
+      const diffFile = `${diffCacheDir}/${fromImageSha1Sum}-${toImageSha1Sum}.image.zstddiff`
+      const [diffFileStat, runTime] = await time(zstdDiff(fromImage, toImage, diffFile, { level: 19 }))
+      imageZstdDiffSize = diffFileStat.size
+      imageZstdDiffTime = runTime
+    }
+
+    console.log(
+      `Image size ${fromImageStat.size} -> ${toImageStat.size} (size-diff: ${
+        toImageStat.size - fromImageStat.size
+      }, bsdiff: ${imageBsDiffSize}, minibsdiff: ${imageMiniBsdiffSize}, minibsdiff-zstd: ${imageMiniBsdiffZstdDiffSize}, vcdiff: ${imageVcDiffSize}, vcdiff-zstd: ${imageVcDiffZstdDiffSize}, zstd-diff: ${imageZstdDiffSize})`
+    )
   }
-
-  let imageZstdDiffSize = 0
-  let imageZstdDiffTime: number | null = null
-
-  if (useZstdDelta) {
-    const zstdDiffFile = `${diffCacheDir}/${fromImageSha1Sum}-${toImageSha1Sum}.image.zstddiff`
-    const [zstdDiffFileStat, runTime] = await time(zstdDiff(fromImage, toImage, zstdDiffFile, { level: 19 }))
-    imageZstdDiffSize = zstdDiffFileStat.size
-    imageZstdDiffTime = runTime
-  }
-
-  console.log(
-    `Image size ${fromImageStat.size} -> ${toImageStat.size} (size-diff: ${
-      toImageStat.size - fromImageStat.size
-    }, bsdiff: ${imageBsDiffSize}, vcdiff: ${imageVcDiffSize}, vcdiff-zstd: ${imageVcDiffZstdDiffSize}, zstd-diff: ${imageZstdDiffSize})`
-  )
 
   // Do file comparison
   const fileChanges: FileChange[] = []
@@ -435,6 +464,26 @@ async function main(argv: string[]): Promise<number> {
           })
         }
 
+        if (useMiniBsdiff) {
+          const diffFile = `${diffCacheDir}/${fromFileSha1Sum}-${toFileSha1Sum}.minibsdiff`
+          const [diffFileStat, runTime] = await time(miniBsdiff(fromFile[0].fullPath, toFile.fullPath, diffFile))
+          compressorResult.push({
+            type: CompressorType.MINI_BS_DIFF,
+            size: diffFileStat.size,
+            time: runTime
+          })
+
+          if (useZstd) {
+            const diffZstdFile = `${diffCacheDir}/${fromFileSha1Sum}-${toFileSha1Sum}.minibsdiff.zstd`
+            const [vcDiffZstdFileStat, runTime] = await time(zstd(diffFile, diffZstdFile))
+            compressorResult.push({
+              type: CompressorType.MINI_BS_DIFF_ZSTD,
+              size: vcDiffZstdFileStat.size,
+              time: runTime
+            })
+          }
+        }
+
         if (useVcdiff) {
           const vcDiffFile = `${diffCacheDir}/${fromFileSha1Sum}-${toFileSha1Sum}.vcdiff`
           const [vsDiffFileStat, runTime] = await time(vcdiff(fromFile[0].fullPath, toFile.fullPath, vcDiffFile))
@@ -455,7 +504,7 @@ async function main(argv: string[]): Promise<number> {
           }
         }
 
-        if (useZstdDelta) {
+        if (useZstdDiff) {
           const zstdDiffFile = `${diffCacheDir}/${fromFileSha1Sum}-${toFileSha1Sum}.zstddiff`
           const [zstdDiffFileStat, runTime] = await time(zstdDiff(fromFile[0].fullPath, toFile.fullPath, zstdDiffFile))
           compressorResult.push({
