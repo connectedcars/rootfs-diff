@@ -125,6 +125,11 @@ async function main(argv: string[]): Promise<number> {
         type: 'boolean',
         default: false
       },
+      useVcdiff: {
+        describe: 'Use vcdiff for deltas',
+        type: 'boolean',
+        default: false
+      },
       useCourgette: {
         describe: 'Use courgette for deltas',
         type: 'boolean',
@@ -132,6 +137,11 @@ async function main(argv: string[]): Promise<number> {
       },
       useZucchini: {
         describe: 'Use zucchini for deltas',
+        type: 'boolean',
+        default: false
+      },
+      useZstdDelta: {
+        describe: 'Use zstd for deltas',
         type: 'boolean',
         default: false
       },
@@ -177,10 +187,11 @@ async function main(argv: string[]): Promise<number> {
   console.log(`Using cache folder: ${diffCacheDir}`)
 
   const useBsdiff = flags.useBsdiff && (await hasBsdiff())
-  const useVcdiff = flags.useBsdiff && (await hasVciff())
+  const useVcdiff = flags.useVcdiff && (await hasVciff())
   const useCourgette = flags.useCourgette && (await hasCourgette())
   const useZucchini = flags.useZucchini && (await hasZucchini())
   const useZstd = flags.useZstd && (await hasZstd())
+  const useZstdDelta = flags.useZstdDelta && (await hasZstd())
   const useDiffoscope = await flags.useDiffoscope
   const useUnSquashFs = await hasUnsquashfs()
   const useCpio = await hasCpio()
@@ -307,7 +318,7 @@ async function main(argv: string[]): Promise<number> {
   let imageZstdDiffSize = 0
   let imageZstdDiffTime: number | null = null
 
-  if (useZstd) {
+  if (useZstdDelta) {
     const zstdDiffFile = `${diffCacheDir}/${fromImageSha1Sum}-${toImageSha1Sum}.image.zstddiff`
     const [zstdDiffFileStat, runTime] = await time(zstdDiff(fromImage, toImage, zstdDiffFile, { level: 19 }))
     imageZstdDiffSize = zstdDiffFileStat.size
@@ -437,7 +448,7 @@ async function main(argv: string[]): Promise<number> {
           }
         }
 
-        if (useZstd) {
+        if (useZstdDelta) {
           const zstdDiffFile = `${diffCacheDir}/${fromFileSha1Sum}-${toFileSha1Sum}.zstddiff`
           const [zstdDiffFileStat, runTime] = await time(zstdDiff(fromFile[0].fullPath, toFile.fullPath, zstdDiffFile))
           compressorResult.push({
