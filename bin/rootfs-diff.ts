@@ -208,13 +208,14 @@ async function main(argv: string[]): Promise<number> {
 
   const paths: string[] = []
   const images: string[] = []
-  for (const rootfsPath of flags.images) {
+  for (let rootfsPath of flags.images) {
     let rootfsPathStat = await lstatAsync(rootfsPath)
 
     if (rootfsPathStat.isSymbolicLink()) {
       // Handle path being a symlink
       const resolvedRootfsPath = path.resolve(path.dirname(rootfsPath), await readlinkAsync(rootfsPath))
-      rootfsPathStat = await lstatAsync(resolvedRootfsPath)
+      rootfsPath = resolvedRootfsPath
+      rootfsPathStat = await lstatAsync(rootfsPath)
     }
 
     if (rootfsPathStat.isFile()) {
