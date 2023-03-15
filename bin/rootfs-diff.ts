@@ -178,6 +178,16 @@ async function main(argv: string[]): Promise<number> {
       cacheDir: {
         describe: 'Location to store cache files',
         type: 'string'
+      },
+      maxImageSize: {
+        describe: 'Error if image is larged than x bytes',
+        type: 'number',
+        default: 0
+      },
+      maxImageDiffSize: {
+        describe: 'Error if image is larged than x bytes',
+        type: 'number',
+        default: 0
       }
     })
     .help()
@@ -298,6 +308,8 @@ async function main(argv: string[]): Promise<number> {
     }
   }
 
+  const errors: string[] = []
+
   // Do image compression tests
   if (images.length === 2) {
     const [fromImage, toImage] = images
@@ -305,6 +317,15 @@ async function main(argv: string[]): Promise<number> {
     const toImageSha1Sum = (await sha1File(toImage)).toString('hex')
     const fromImageStat = await lstatAsync(fromImage)
     const toImageStat = await lstatAsync(toImage)
+
+    if (flags.maxImageSize) {
+      if (fromImageStat.size > flags.maxImageSize) {
+        errors.push(`${fromImage} larger than max size: ${fromImageStat.size} > ${flags.maxImageSize}`)
+      }
+      if (toImageStat.size > flags.maxImageSize) {
+        errors.push(`${toImage} larger than max size: ${toImageStat.size} > ${flags.maxImageSize}`)
+      }
+    }
 
     let imageBsDiffSize = 0
     let imageBsDiffTime: number | null = null
@@ -361,10 +382,16 @@ async function main(argv: string[]): Promise<number> {
       imageZstdDiffTime = runTime
     }
 
+    const imageSizeDiff = toImageStat.size - fromImageStat.size
+
+    if (flags.maxImageDiffSize) {
+      if (imageSizeDiff > flags.maxImageDiffSize) {
+        errors.push(`Diff size larger than max: ${imageSizeDiff} > ${flags.maxImageDiffSize}`)
+      }
+    }
+
     console.log(
-      `Image size ${fromImageStat.size} -> ${toImageStat.size} (size-diff: ${
-        toImageStat.size - fromImageStat.size
-      }, bsdiff: ${imageBsDiffSize}, minibsdiff: ${imageMiniBsdiffSize}, minibsdiff-zstd: ${imageMiniBsdiffZstdDiffSize}, vcdiff: ${imageVcDiffSize}, vcdiff-zstd: ${imageVcDiffZstdDiffSize}, zstd-diff: ${imageZstdDiffSize})`
+      `Image size ${fromImageStat.size} -> ${toImageStat.size} (size-diff: ${imageSizeDiff}, bsdiff: ${imageBsDiffSize}, minibsdiff: ${imageMiniBsdiffSize}, minibsdiff-zstd: ${imageMiniBsdiffZstdDiffSize}, vcdiff: ${imageVcDiffSize}, vcdiff-zstd: ${imageVcDiffZstdDiffSize}, zstd-diff: ${imageZstdDiffSize})`
     )
   }
 
@@ -847,7 +874,10 @@ async function main(argv: string[]): Promise<number> {
 
   console.log(` total diff size        : ${totalDiffSize} (${totalDiffCompressorStats}))`)
 
-  return 0
+  for (const error of errors) {
+    console.error(error)
+  }
+  return errors.length > 0 ? 1 : 0
 }
 
 main(process.argv.slice(2)).catch(e => {
