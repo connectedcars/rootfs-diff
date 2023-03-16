@@ -101,14 +101,61 @@ const soEndingRegex = /(?:-\d+(?:\.\d+){0,3}\.so|\.so(?:\.\d+){1,3})$/
 const soBaseNameRegex = new RegExp(`^(.+)${soEndingRegex.source}`)
 const soEndingRegexStrict = new RegExp(`^${soEndingRegex.source}`)
 
-function print(msg: string, noOutput = false, maxLines = 100): void {
-  if (!noOutput) {
-    const outputLines = msg.split('\n')
-    console.log(outputLines.slice(0, maxLines).join('\n'))
-    if (outputLines.length > maxLines) {
-      console.log('...')
-    }
+// 818271818 -> "780.36 MB (818271818 B)"
+function formatBytes(bytes: number): string {
+  if (bytes === 0) {
+    return '0 B'
   }
+
+  const isNegative = bytes < 0
+  const absBytes = Math.abs(bytes)
+  const e = Math.floor(Math.log(absBytes) / Math.log(1024))
+  const formattedSize =
+    e === 0 ? `${absBytes} B` : (absBytes / Math.pow(1024, e)).toFixed(2) + ' ' + 'KMGTP'.charAt(e - 1) + 'B'
+
+  // Add a negative sign if the original value was negative.
+  const signedFormattedSize = isNegative ? `-${formattedSize}` : formattedSize
+
+  // If the result is in bytes, don't add the byte count in parentheses.
+  if (e === 0) {
+    return signedFormattedSize
+  }
+
+  return `${signedFormattedSize} (${bytes} B)`
+}
+
+// etc/fstab.stim: 780.36 MB (818271818 B), zstd: 12.36 MB (12360000 B)
+function printSingle(filePath: string | RegExp, size: number, zstdSize: number, prependStr = '', noOutput = false) {
+  if (noOutput === true) {
+    return
+  }
+  const hBytes = formatBytes(size)
+  const zstdHBytes = formatBytes(zstdSize)
+
+  const zstdStr = zstdHBytes === '0 B' ? `` : `, zstd: ${zstdHBytes}`
+  console.log(`${prependStr}${filePath}: ${hBytes}${zstdStr}`)
+}
+
+// etc/build: 12.36 MB (12360000 B) -> 12.34 MB (12340000 B), diff: 0.02 MB (20000 B)
+function printDiff(
+  filePath: string | RegExp,
+  sizeOld: number,
+  sizeNew: number,
+  sizeDiff: number,
+  prependStr = '',
+  noOutput = false
+) {
+  if (noOutput === true) {
+    return
+  }
+  const hBytesOld = formatBytes(sizeOld)
+  const hBytesNew = formatBytes(sizeNew)
+  const hBytesDiff = formatBytes(sizeDiff)
+  console.log(`${prependStr}${filePath}: ${hBytesOld} -> ${hBytesNew}, diff: ${hBytesDiff}`)
+}
+
+function printComp() {
+  // TODO:
 }
 
 async function main(argv: string[]): Promise<number> {
@@ -390,6 +437,7 @@ async function main(argv: string[]): Promise<number> {
       }
     }
 
+    // TODO: stuff here
     console.log(
       `Image size ${fromImageStat.size} -> ${toImageStat.size} (size-diff: ${imageSizeDiff}, bsdiff: ${imageBsDiffSize}, minibsdiff: ${imageMiniBsdiffSize}, minibsdiff-zstd: ${imageMiniBsdiffZstdDiffSize}, vcdiff: ${imageVcDiffSize}, vcdiff-zstd: ${imageVcDiffZstdDiffSize}, zstd-diff: ${imageZstdDiffSize})`
     )
@@ -627,7 +675,7 @@ async function main(argv: string[]): Promise<number> {
 
   // Print changes
   const groupNewSeen: Record<string, boolean> = {}
-  print(`Grouped new files:`, flags.hideGroups)
+  console.log(`Grouped new files:`)
   for (const groupRegex of groups) {
     const found = fileChanges.filter(
       (f): f is NewFile =>
@@ -639,10 +687,10 @@ async function main(argv: string[]): Promise<number> {
         .map(f => f.compressorResult.find(c => c.type === CompressorType.ZSTD)?.size ?? 0)
         .reduce((a, c) => a + c, 0)
 
-      print(`  ${groupRegex}: (size: ${totalSize}, zstd: ${totalZstdSize})`, flags.hideGroups)
+      printSingle(groupRegex, totalSize, totalZstdSize, `  `)
       for (const file of found) {
         const zstdSize = file.compressorResult.find(c => c.type === CompressorType.ZSTD)?.size ?? 0
-        print(`    ${file.to.path}: (size: ${file.to.size}, zstd: ${zstdSize})`, flags.hideGroups)
+        printSingle(file.to.path, file.to.size, zstdSize, `    `)
         groupNewSeen[file.to.path] = true
       }
     }
@@ -654,10 +702,10 @@ async function main(argv: string[]): Promise<number> {
   console.log(`Single new files:`)
   for (const file of singleNewFiles.sort((a, b) => b.to.size - a.to.size)) {
     const zstdSize = file.compressorResult.find(c => c.type === CompressorType.ZSTD)?.size ?? 0
-    console.log(`  ${file.to.path}: (size: ${file.to.size}, zstd: ${zstdSize})`)
+    printSingle(file.to.path, file.to.size, zstdSize, `  `)
   }
 
-  print(`Grouped removed files:`, flags.hideGroups)
+  console.log(`Grouped removed files:`)
   const groupRemovedSeen: Record<string, boolean> = {}
   for (const groupRegex of groups) {
     const found = fileChanges.filter(
@@ -669,10 +717,10 @@ async function main(argv: string[]): Promise<number> {
       const totalZstdSize = found
         .map(f => f.compressorResult.find(c => c.type === CompressorType.ZSTD)?.size ?? 0)
         .reduce((a, c) => a + c, 0)
-      print(`  ${groupRegex}: (size: ${totalSize}, zstd: ${totalZstdSize})`, flags.hideGroups)
+      printSingle(groupRegex, totalSize, totalZstdSize, `  `)
       for (const file of found) {
         const zstdSize = file.compressorResult.find(c => c.type === CompressorType.ZSTD)?.size ?? 0
-        print(`    ${file.from.path}: (size: ${file.from.size}, zstd: ${zstdSize})`, flags.hideGroups)
+        printSingle(file.from.path, file.from.size, zstdSize, `    `)
         groupRemovedSeen[file.from.path] = true
       }
     }
@@ -684,7 +732,7 @@ async function main(argv: string[]): Promise<number> {
   console.log(`Single removed files:`)
   for (const file of singleRemovedFiles.sort((a, b) => b.from.size - a.from.size)) {
     const zstdSize = file.compressorResult.find(c => c.type === CompressorType.ZSTD)?.size ?? 0
-    console.log(`  ${file.from.path}: (size: ${file.from.size}, zstd: ${zstdSize})`)
+    printSingle(file.from.path, file.from.size, zstdSize, `  `)
   }
 
   console.log(`Updated files:`)
@@ -703,13 +751,14 @@ async function main(argv: string[]): Promise<number> {
       diffStats += `, ${compressorName}: ${compressedSize}`
     }
 
-    console.log(
-      `  ${updatedFile.to.path}${fromPath}: ${updatedFile.from.size} -> ${updatedFile.to.size} (${diffStats})`
-    )
-    print(updatedFile.diffoscope.replace(/(^|\n)(.)/gm, '$1  $2'), !useDiffoscope)
+    // console.log(
+    //   `  ${updatedFile.to.path}${fromPath}: ${updatedFile.from.size} -> ${updatedFile.to.size} (${diffStats})`
+    // )
+    printDiff(updatedFile.to.path, updatedFile.from.size, updatedFile.to.size, updatedFile.sizeDiff, `  `)
+    // print(updatedFile.diffoscope.replace(/(^|\n)(.)/gm, '$1  $2'), !useDiffoscope)
   }
 
-  print(`Grouped files:`, flags.hideGroups)
+  console.log(`Grouped files:`)
   const groupToSeen: Record<string, boolean> = {}
   for (const groupRegex of groups) {
     const found = fileChanges.filter(
@@ -742,7 +791,11 @@ async function main(argv: string[]): Promise<number> {
         totalDiffStats += `, ${compressorName}: ${totalCompressedSize}`
       }
 
-      print(`  ${groupRegex}: (size: ${totalSize}${totalDiffStats})`, flags.hideGroups)
+      // print(`  ${groupRegex}: (size: ${totalSize}${totalDiffStats})`, flags.hideGroups)
+      // TODO: i don't understand what's supposed to happen here? just printing 0
+      printDiff(groupRegex, totalSize, totalZstdSize, 0, `  `)
+      printComp()
+
       for (const file of found) {
         let diffStats = file.type === FileChangeType.UPDATED ? `, size-diff:${file.sizeDiff}` : ''
         for (const compressorType of Object.values(CompressorType).filter((v): v is number => !isNaN(Number(v)))) {
@@ -754,8 +807,10 @@ async function main(argv: string[]): Promise<number> {
           }
 
           diffStats += `, ${compressorName}: ${compressedSize}`
+          printComp() // TODO: do it here
+          // printDiff(file.to.path, file)
         }
-        print(`    ${file.to.path}: (size: ${file.to.size}${diffStats})`, flags.hideGroups)
+        // print(`    ${file.to.path}: (size: ${file.to.size}${diffStats})`, flags.hideGroups)
       }
     }
   }
