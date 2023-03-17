@@ -136,28 +136,6 @@ function printSingle(filePath: string | RegExp, size: number, zstdSize: number, 
   console.log(`${prependStr}${filePath}: ${hBytes}${zstdStr}`)
 }
 
-// etc/build: 12.36 MB (12360000 B) -> 12.34 MB (12340000 B), diff: 0.02 MB (20000 B)
-function printDiff(
-  filePath: string | RegExp,
-  sizeOld: number,
-  sizeNew: number,
-  sizeDiff: number,
-  prependStr = '',
-  noOutput = false
-) {
-  if (noOutput === true) {
-    return
-  }
-  const hBytesOld = formatBytes(sizeOld)
-  const hBytesNew = formatBytes(sizeNew)
-  const hBytesDiff = formatBytes(sizeDiff)
-  console.log(`${prependStr}${filePath}: ${hBytesOld} -> ${hBytesNew}, diff: ${hBytesDiff}`)
-}
-
-function printComp() {
-  // TODO:
-}
-
 async function main(argv: string[]): Promise<number> {
   const flags = await yargs
     .scriptName('rootfs-diff')
@@ -437,9 +415,17 @@ async function main(argv: string[]): Promise<number> {
       }
     }
 
-    // TODO: stuff here
+    const hFromImageSize = formatBytes(fromImageStat.size)
+    const hToImageSize = formatBytes(toImageStat.size)
+    const hImageSizeDiff = formatBytes(imageSizeDiff)
+    const hImageBsDiffSize = formatBytes(imageBsDiffSize)
+    const hImageMiniBsdiffSize = formatBytes(imageMiniBsdiffSize)
+    const hImageMiniBsdiffZstdDiffSize = formatBytes(imageMiniBsdiffZstdDiffSize)
+    const hImageVcDiffSize = formatBytes(imageVcDiffSize)
+    const hImageVcDiffZstdDiffSize = formatBytes(imageVcDiffZstdDiffSize)
+    const hImageZstdDiffSize = formatBytes(imageZstdDiffSize)
     console.log(
-      `Image size ${fromImageStat.size} -> ${toImageStat.size} (size-diff: ${imageSizeDiff}, bsdiff: ${imageBsDiffSize}, minibsdiff: ${imageMiniBsdiffSize}, minibsdiff-zstd: ${imageMiniBsdiffZstdDiffSize}, vcdiff: ${imageVcDiffSize}, vcdiff-zstd: ${imageVcDiffZstdDiffSize}, zstd-diff: ${imageZstdDiffSize})`
+      `Image size ${hFromImageSize} -> ${hToImageSize} (size-diff: ${hImageSizeDiff}, bsdiff: ${hImageBsDiffSize}, minibsdiff: ${hImageMiniBsdiffSize}, minibsdiff-zstd: ${hImageMiniBsdiffZstdDiffSize}, vcdiff: ${hImageVcDiffSize}, vcdiff-zstd: ${hImageVcDiffZstdDiffSize}, zstd-diff: ${hImageZstdDiffSize})`
     )
   }
 
@@ -748,13 +734,15 @@ async function main(argv: string[]): Promise<number> {
       }
 
       const compressorName = CompressorType[compressorType].toLocaleLowerCase()
-      diffStats += `, ${compressorName}: ${compressedSize}`
+      const hCompressedSize = formatBytes(compressedSize)
+      diffStats += `, ${compressorName}: ${hCompressedSize}`
     }
 
-    // console.log(
-    //   `  ${updatedFile.to.path}${fromPath}: ${updatedFile.from.size} -> ${updatedFile.to.size} (${diffStats})`
-    // )
-    printDiff(updatedFile.to.path, updatedFile.from.size, updatedFile.to.size, updatedFile.sizeDiff, `  `)
+    const hFromSize = formatBytes(updatedFile.from.size)
+    const hToSize = formatBytes(updatedFile.to.size)
+    const hSizeDiff = formatBytes(updatedFile.sizeDiff)
+    // example: etc/build: 12.36 MB (12360000 B) -> 12.34 MB (12340000 B), diff: 0.02 MB (20000 B)
+    console.log(`  ${updatedFile.to.path}${fromPath}: ${hFromSize} -> ${hToSize}, diff: ${hSizeDiff} (${diffStats})`)
     // print(updatedFile.diffoscope.replace(/(^|\n)(.)/gm, '$1  $2'), !useDiffoscope)
   }
 
@@ -788,13 +776,12 @@ async function main(argv: string[]): Promise<number> {
           continue
         }
 
-        totalDiffStats += `, ${compressorName}: ${totalCompressedSize}`
+        const hTotalCompressedSize = formatBytes(totalCompressedSize)
+        totalDiffStats += `, ${compressorName}: ${hTotalCompressedSize}`
       }
 
-      // print(`  ${groupRegex}: (size: ${totalSize}${totalDiffStats})`, flags.hideGroups)
-      // TODO: i don't understand what's supposed to happen here? just printing 0
-      printDiff(groupRegex, totalSize, totalZstdSize, 0, `  `)
-      printComp()
+      const hTotalSize = formatBytes(totalSize)
+      console.log(`  ${groupRegex}: (size: ${hTotalSize}${totalDiffStats})`)
 
       for (const file of found) {
         let diffStats = file.type === FileChangeType.UPDATED ? `, size-diff:${file.sizeDiff}` : ''
@@ -806,11 +793,10 @@ async function main(argv: string[]): Promise<number> {
             continue
           }
 
-          diffStats += `, ${compressorName}: ${compressedSize}`
-          printComp() // TODO: do it here
-          // printDiff(file.to.path, file)
+          const hCompressedSize = formatBytes(compressedSize)
+          diffStats += `, ${compressorName}: ${hCompressedSize}`
         }
-        // print(`    ${file.to.path}: (size: ${file.to.size}${diffStats})`, flags.hideGroups)
+        console.log(`    ${file.to.path}: (size: ${file.to.size}${diffStats})`)
       }
     }
   }
@@ -820,7 +806,8 @@ async function main(argv: string[]): Promise<number> {
     .filter((f): f is SameFile => f.type === FileChangeType.SAME)
     .map(f => f.to.size)
     .reduce((a, c) => a + c, 0)
-  console.log(` unchanged files size   : ${totalSameFilesSize}`)
+  const hTotalSameFilesSize = formatBytes(totalSameFilesSize)
+  console.log(` unchanged files size   : ${hTotalSameFilesSize}`)
 
   const totalNewFilesSize = fileChanges
     .filter((f): f is NewFile => f.type === FileChangeType.NEW)
@@ -843,9 +830,15 @@ async function main(argv: string[]): Promise<number> {
     .map(f => f.compressorResult.find(c => c.type === CompressorType.ZSTD)?.size ?? 0)
     .reduce((a, c) => a + c, 0)
 
-  console.log(` new files size         : ${totalNewFilesSize} (zstd: ${totalNewFilesZstdSize})`)
-  console.log(`   grouped : ${totalNewGroupSize} (zstd: ${totalNewGroupZstdSize})`)
-  console.log(`   single  : ${singleNewFilesSize} (zstd: ${singleNewFilesZstdSize})`)
+  const hTotalNewFilesSize = formatBytes(totalNewFilesSize)
+  const hTotalNewFilesZstdSize = formatBytes(totalNewFilesZstdSize)
+  const hTotalNewGroupSize = formatBytes(totalNewGroupSize)
+  const hTotalNewGroupZstdSize = formatBytes(totalNewGroupZstdSize)
+  const hSingleNewFilesSize = formatBytes(singleNewFilesSize)
+  const hSingleNewFilesZstdSize = formatBytes(singleNewFilesZstdSize)
+  console.log(` new files size         : ${hTotalNewFilesSize} (zstd: ${hTotalNewFilesZstdSize})`)
+  console.log(`   grouped : ${hTotalNewGroupSize} (zstd: ${hTotalNewGroupZstdSize})`)
+  console.log(`   single  : ${hSingleNewFilesSize} (zstd: ${hSingleNewFilesZstdSize})`)
 
   const totalRemovedFilesSize = fileChanges
     .filter((f): f is RemovedFile => f.type === FileChangeType.REMOVED)
@@ -868,9 +861,15 @@ async function main(argv: string[]): Promise<number> {
     .map(f => f.compressorResult.find(c => c.type === CompressorType.ZSTD)?.size ?? 0)
     .reduce((a, c) => a + c, 0)
 
-  console.log(` removed files size     : ${totalRemovedFilesSize} (zstd: ${totalRemovedFilesZstdSize})`)
-  console.log(`   grouped : ${totalRemovedGroupSize} (zstd: ${totalRemovedGroupZstdSize})`)
-  console.log(`   single  : ${singleRemovedFilesSize} (zstd: ${singleRemovedFilesZstdSize})`)
+  const hTotalRemovedFilesSize = formatBytes(totalRemovedFilesSize)
+  const hTotalRemovedFilesZstdSize = formatBytes(totalRemovedFilesZstdSize)
+  const hTotalRemovedGroupSize = formatBytes(totalRemovedGroupSize)
+  const hTotalRemovedGroupZstdSize = formatBytes(totalRemovedGroupZstdSize)
+  const hSingleRemovedFilesSize = formatBytes(singleRemovedFilesSize)
+  const hSingleRemovedFilesZstdSize = formatBytes(singleRemovedFilesZstdSize)
+  console.log(` removed files size     : ${hTotalRemovedFilesSize} (zstd: ${hTotalRemovedFilesZstdSize})`)
+  console.log(`   grouped : ${hTotalRemovedGroupSize} (zstd: ${hTotalRemovedGroupZstdSize})`)
+  console.log(`   single  : ${hSingleRemovedFilesSize} (zstd: ${hSingleRemovedFilesZstdSize})`)
 
   const totalUpdatedFromSize = fileChanges
     .filter((f): f is UpdatedFile => f.type === FileChangeType.UPDATED)
@@ -896,10 +895,11 @@ async function main(argv: string[]): Promise<number> {
     updatedCompressorStats += `, ${compressorName}: ${totalCompressedSize}`
   }
 
+  const hTotalUpdatedFromSize = formatBytes(totalUpdatedFromSize)
+  const hTotalUpdatedToSize = formatBytes(totalUpdatedToSize)
+  const hTotalUpdatedSizeDiff = formatBytes(totalUpdatedToSize - totalUpdatedFromSize)
   console.log(
-    ` updated files size     : ${totalUpdatedFromSize} -> ${totalUpdatedToSize} (size-diff: ${
-      totalUpdatedToSize - totalUpdatedFromSize
-    }${updatedCompressorStats})`
+    ` updated files size     : ${hTotalUpdatedFromSize} -> ${hTotalUpdatedToSize} (size-diff: ${hTotalUpdatedSizeDiff}${updatedCompressorStats})`
   )
 
   const totalDiffSize = totalUpdatedToSize + totalNewFilesSize
@@ -927,7 +927,8 @@ async function main(argv: string[]): Promise<number> {
     totalDiffCompressorStats += `, ${compressorName}: ${totalUpdatedCompressedSize}`
   }
 
-  console.log(` total diff size        : ${totalDiffSize} (${totalDiffCompressorStats}))`)
+  const hTotalDiffSize = formatBytes(totalDiffSize)
+  console.log(` total diff size        : ${hTotalDiffSize} (${totalDiffCompressorStats})`)
 
   for (const error of errors) {
     console.error(error)
