@@ -660,27 +660,26 @@ async function main(argv: string[]): Promise<number> {
   }
 
   // Print changes
-  const groupNewSeen: Record<string, boolean> = {}
-
   if (!flags.hideGroups) {
     console.log(`Grouped new files:`)
-    for (const groupRegex of groups) {
-      const found = fileChanges.filter(
-        (f): f is NewFile =>
-          f.type === FileChangeType.NEW && !groupNewSeen[f.to.path] && f.to.path.match(groupRegex) !== null
-      )
-      if (found.length > 0) {
-        const totalSize = found.map(f => f.to.size).reduce((a, c) => a + c, 0)
-        const totalZstdSize = found
-          .map(f => f.compressorResult.find(c => c.type === CompressorType.ZSTD)?.size ?? 0)
-          .reduce((a, c) => a + c, 0)
+  }
+  const groupNewSeen: Record<string, boolean> = {}
+  for (const groupRegex of groups) {
+    const found = fileChanges.filter(
+      (f): f is NewFile =>
+        f.type === FileChangeType.NEW && !groupNewSeen[f.to.path] && f.to.path.match(groupRegex) !== null
+    )
+    if (found.length > 0) {
+      const totalSize = found.map(f => f.to.size).reduce((a, c) => a + c, 0)
+      const totalZstdSize = found
+        .map(f => f.compressorResult.find(c => c.type === CompressorType.ZSTD)?.size ?? 0)
+        .reduce((a, c) => a + c, 0)
 
-        printSingle(groupRegex, totalSize, totalZstdSize, `  `, flags.hideGroups)
-        for (const file of found) {
-          const zstdSize = file.compressorResult.find(c => c.type === CompressorType.ZSTD)?.size ?? 0
-          printSingle(file.to.path, file.to.size, zstdSize, `    `, flags.hideGroups)
-          groupNewSeen[file.to.path] = true
-        }
+      printSingle(groupRegex, totalSize, totalZstdSize, `  `, flags.hideGroups)
+      for (const file of found) {
+        const zstdSize = file.compressorResult.find(c => c.type === CompressorType.ZSTD)?.size ?? 0
+        printSingle(file.to.path, file.to.size, zstdSize, `    `, flags.hideGroups)
+        groupNewSeen[file.to.path] = true
       }
     }
   }
@@ -695,26 +694,25 @@ async function main(argv: string[]): Promise<number> {
     printSingle(file.to.path, file.to.size, zstdSize, `  `, flags.hideGroups)
   }
 
-  const groupRemovedSeen: Record<string, boolean> = {}
-
   if (!flags.hideGroups) {
     console.log(`Grouped removed files:`)
-    for (const groupRegex of groups) {
-      const found = fileChanges.filter(
-        (f): f is RemovedFile =>
-          f.type === FileChangeType.REMOVED && !groupRemovedSeen[f.from.path] && f.from.path.match(groupRegex) !== null
-      )
-      if (found.length > 0) {
-        const totalSize = found.map(f => f.from.size).reduce((a, c) => a + c, 0)
-        const totalZstdSize = found
-          .map(f => f.compressorResult.find(c => c.type === CompressorType.ZSTD)?.size ?? 0)
-          .reduce((a, c) => a + c, 0)
-        printSingle(groupRegex, totalSize, totalZstdSize, `  `, flags.hideGroups)
-        for (const file of found) {
-          const zstdSize = file.compressorResult.find(c => c.type === CompressorType.ZSTD)?.size ?? 0
-          printSingle(file.from.path, file.from.size, zstdSize, `    `, flags.hideGroups)
-          groupRemovedSeen[file.from.path] = true
-        }
+  }
+  const groupRemovedSeen: Record<string, boolean> = {}
+  for (const groupRegex of groups) {
+    const found = fileChanges.filter(
+      (f): f is RemovedFile =>
+        f.type === FileChangeType.REMOVED && !groupRemovedSeen[f.from.path] && f.from.path.match(groupRegex) !== null
+    )
+    if (found.length > 0) {
+      const totalSize = found.map(f => f.from.size).reduce((a, c) => a + c, 0)
+      const totalZstdSize = found
+        .map(f => f.compressorResult.find(c => c.type === CompressorType.ZSTD)?.size ?? 0)
+        .reduce((a, c) => a + c, 0)
+      printSingle(groupRegex, totalSize, totalZstdSize, `  `, flags.hideGroups)
+      for (const file of found) {
+        const zstdSize = file.compressorResult.find(c => c.type === CompressorType.ZSTD)?.size ?? 0
+        printSingle(file.from.path, file.from.size, zstdSize, `    `, flags.hideGroups)
+        groupRemovedSeen[file.from.path] = true
       }
     }
   }
