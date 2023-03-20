@@ -661,64 +661,72 @@ async function main(argv: string[]): Promise<number> {
 
   // Print changes
   const groupNewSeen: Record<string, boolean> = {}
-  console.log(`Grouped new files:`)
-  for (const groupRegex of groups) {
-    const found = fileChanges.filter(
-      (f): f is NewFile =>
-        f.type === FileChangeType.NEW && !groupNewSeen[f.to.path] && f.to.path.match(groupRegex) !== null
-    )
-    if (found.length > 0) {
-      const totalSize = found.map(f => f.to.size).reduce((a, c) => a + c, 0)
-      const totalZstdSize = found
-        .map(f => f.compressorResult.find(c => c.type === CompressorType.ZSTD)?.size ?? 0)
-        .reduce((a, c) => a + c, 0)
 
-      printSingle(groupRegex, totalSize, totalZstdSize, `  `)
-      for (const file of found) {
-        const zstdSize = file.compressorResult.find(c => c.type === CompressorType.ZSTD)?.size ?? 0
-        printSingle(file.to.path, file.to.size, zstdSize, `    `)
-        groupNewSeen[file.to.path] = true
+  if (!flags.hideGroups) {
+    console.log(`Grouped new files:`)
+    for (const groupRegex of groups) {
+      const found = fileChanges.filter(
+        (f): f is NewFile =>
+          f.type === FileChangeType.NEW && !groupNewSeen[f.to.path] && f.to.path.match(groupRegex) !== null
+      )
+      if (found.length > 0) {
+        const totalSize = found.map(f => f.to.size).reduce((a, c) => a + c, 0)
+        const totalZstdSize = found
+          .map(f => f.compressorResult.find(c => c.type === CompressorType.ZSTD)?.size ?? 0)
+          .reduce((a, c) => a + c, 0)
+
+        printSingle(groupRegex, totalSize, totalZstdSize, `  `, flags.hideGroups)
+        for (const file of found) {
+          const zstdSize = file.compressorResult.find(c => c.type === CompressorType.ZSTD)?.size ?? 0
+          printSingle(file.to.path, file.to.size, zstdSize, `    `, flags.hideGroups)
+          groupNewSeen[file.to.path] = true
+        }
       }
     }
   }
 
+  console.log(`Single new files:`)
   const singleNewFiles = fileChanges.filter(
     (f): f is NewFile => f.type === FileChangeType.NEW && !groupNewSeen[f.to.path]
   )
-  console.log(`Single new files:`)
+
   for (const file of singleNewFiles.sort((a, b) => b.to.size - a.to.size)) {
     const zstdSize = file.compressorResult.find(c => c.type === CompressorType.ZSTD)?.size ?? 0
-    printSingle(file.to.path, file.to.size, zstdSize, `  `)
+    printSingle(file.to.path, file.to.size, zstdSize, `  `, flags.hideGroups)
   }
 
-  console.log(`Grouped removed files:`)
   const groupRemovedSeen: Record<string, boolean> = {}
-  for (const groupRegex of groups) {
-    const found = fileChanges.filter(
-      (f): f is RemovedFile =>
-        f.type === FileChangeType.REMOVED && !groupRemovedSeen[f.from.path] && f.from.path.match(groupRegex) !== null
-    )
-    if (found.length > 0) {
-      const totalSize = found.map(f => f.from.size).reduce((a, c) => a + c, 0)
-      const totalZstdSize = found
-        .map(f => f.compressorResult.find(c => c.type === CompressorType.ZSTD)?.size ?? 0)
-        .reduce((a, c) => a + c, 0)
-      printSingle(groupRegex, totalSize, totalZstdSize, `  `)
-      for (const file of found) {
-        const zstdSize = file.compressorResult.find(c => c.type === CompressorType.ZSTD)?.size ?? 0
-        printSingle(file.from.path, file.from.size, zstdSize, `    `)
-        groupRemovedSeen[file.from.path] = true
+
+  if (!flags.hideGroups) {
+    console.log(`Grouped removed files:`)
+    for (const groupRegex of groups) {
+      const found = fileChanges.filter(
+        (f): f is RemovedFile =>
+          f.type === FileChangeType.REMOVED && !groupRemovedSeen[f.from.path] && f.from.path.match(groupRegex) !== null
+      )
+      if (found.length > 0) {
+        const totalSize = found.map(f => f.from.size).reduce((a, c) => a + c, 0)
+        const totalZstdSize = found
+          .map(f => f.compressorResult.find(c => c.type === CompressorType.ZSTD)?.size ?? 0)
+          .reduce((a, c) => a + c, 0)
+        printSingle(groupRegex, totalSize, totalZstdSize, `  `, flags.hideGroups)
+        for (const file of found) {
+          const zstdSize = file.compressorResult.find(c => c.type === CompressorType.ZSTD)?.size ?? 0
+          printSingle(file.from.path, file.from.size, zstdSize, `    `, flags.hideGroups)
+          groupRemovedSeen[file.from.path] = true
+        }
       }
     }
   }
 
+  console.log(`Single removed files:`)
   const singleRemovedFiles = fileChanges.filter(
     (f): f is RemovedFile => f.type === FileChangeType.REMOVED && !groupRemovedSeen[f.from.path]
   )
-  console.log(`Single removed files:`)
+
   for (const file of singleRemovedFiles.sort((a, b) => b.from.size - a.from.size)) {
     const zstdSize = file.compressorResult.find(c => c.type === CompressorType.ZSTD)?.size ?? 0
-    printSingle(file.from.path, file.from.size, zstdSize, `  `)
+    printSingle(file.from.path, file.from.size, zstdSize, `  `, flags.hideGroups)
   }
 
   console.log(`Updated files:`)
@@ -743,7 +751,9 @@ async function main(argv: string[]): Promise<number> {
     const hSizeDiff = formatBytes(updatedFile.sizeDiff)
     // example: etc/build: 12.36 MB (12360000 B) -> 12.34 MB (12340000 B), diff: 0.02 MB (20000 B)
     console.log(`  ${updatedFile.to.path}${fromPath}: ${hFromSize} -> ${hToSize}, diff: ${hSizeDiff} (${diffStats})`)
-    // print(updatedFile.diffoscope.replace(/(^|\n)(.)/gm, '$1  $2'), !useDiffoscope)
+    if (useDiffoscope) {
+      console.log(updatedFile.diffoscope.replace(/(^|\n)(.)/gm, '$1  $2'))
+    }
   }
 
   console.log(`Grouped files:`)
